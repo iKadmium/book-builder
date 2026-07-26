@@ -10,11 +10,34 @@ pub struct Config {
     #[serde(default)]
     pub forgejo: ForgejoConfig,
     #[serde(default)]
+    pub google: GoogleConfig,
+    #[serde(default)]
     pub email: EmailConfig,
 }
 
 fn default_data_dir() -> PathBuf {
     PathBuf::from("data")
+}
+
+/// Reusable OAuth2 client credentials, shared across providers (Forgejo, Google, …).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OAuth2Credentials {
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+}
+
+impl OAuth2Credentials {
+    pub fn is_configured(&self) -> bool {
+        !self.client_id.is_empty() && !self.client_secret.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GoogleConfig {
+    #[serde(default)]
+    pub oauth: OAuth2Credentials,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -24,19 +47,11 @@ pub struct ForgejoConfig {
     #[serde(default)]
     pub repo: String,
     #[serde(default)]
-    pub pat: String,
+    pub oauth: OAuth2Credentials,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EmailConfig {
-    #[serde(default)]
-    pub smtp_host: String,
-    #[serde(default = "default_smtp_port")]
-    pub smtp_port: u16,
-    #[serde(default)]
-    pub smtp_username: String,
-    #[serde(default)]
-    pub smtp_password: String,
     #[serde(default)]
     pub from: String,
     /// Kindle (or other recipient) email address.
@@ -44,17 +59,37 @@ pub struct EmailConfig {
     pub to: String,
 }
 
-fn default_smtp_port() -> u16 {
-    587
-}
-
 pub type SharedConfig = Arc<RwLock<Config>>;
+
+impl Config {
+    /// Return a clone with all secret fields blanked — safe to send to the browser.
+    /// Secrets: `oauth.client_secret` per provider (email has no secrets with Gmail API).
+    pub fn redacted(&self) -> Self {
+        let mut r = self.clone();
+        r.forgejo.oauth.client_secret.clear();
+        r.google.oauth.client_secret.clear();
+        r
+    }
+
+    /// Fill any empty secret fields in `self` from `existing`.
+    /// Call this on a PUT payload before saving, so the browser sending a blank
+    /// (redacted) value doesn't accidentally wipe a stored secret.
+    pub fn apply_secrets_from(&mut self, existing: &Config) {
+        if self.forgejo.oauth.client_secret.is_empty() {
+            self.forgejo.oauth.client_secret = existing.forgejo.oauth.client_secret.clone();
+        }
+        if self.google.oauth.client_secret.is_empty() {
+            self.google.oauth.client_secret = existing.google.oauth.client_secret.clone();
+        }
+    }
+}
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             data_dir: default_data_dir(),
             forgejo: ForgejoConfig::default(),
+            google: GoogleConfig::default(),
             email: EmailConfig::default(),
         }
     }

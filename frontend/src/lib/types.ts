@@ -15,17 +15,22 @@ export interface StatusData {
     lastPull: string | null;
     books: Record<string, Book>;
 }
+export interface OAuth2Credentials {
+    client_id: string;
+    client_secret: string;
+}
+
 export interface ForgejoConfig {
     url: string;
     repo: string;
-    pat: string;
+    oauth: OAuth2Credentials;
+}
+
+export interface GoogleConfig {
+    oauth: OAuth2Credentials;
 }
 
 export interface EmailConfig {
-    smtp_host: string;
-    smtp_port: number;
-    smtp_username: string;
-    smtp_password: string;
     from: string;
     to: string;
 }
@@ -33,5 +38,6 @@ export interface EmailConfig {
 export interface AppConfig {
     data_dir: string;
     forgejo: ForgejoConfig;
+    google: GoogleConfig;
     email: EmailConfig;
 }

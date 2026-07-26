@@ -1,17 +1,24 @@
+//! Email delivery via the Gmail API (OAuth2 bearer token).
+
 use std::path::Path;
 
-use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
-    message::{Attachment, MultiPart, SinglePart, header::ContentType},
-    transport::smtp::authentication::Credentials,
-    Message,
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 
-use crate::config::EmailConfig;
-
-pub async fn deploy_book(config: &EmailConfig, epub_path: &Path, title: &str) -> Result<(), String> {
-    if config.smtp_host.is_empty() {
-        return Err("Email is not configured (smtp_host is empty)".into());
+/// Send `epub_path` to `to` via the Gmail API.
+/// `access_token` must be a valid Google OAuth2 token with the
+/// `https://www.googleapis.com/auth/gmail.send` scope.
+pub async fn deploy_book(
+    from: &str,
+    to: &str,
+    access_token: &str,
+    epub_path: &Path,
+    title: &str,
+) -> Result<(), String> {
+    if to.is_empty() {
+        return Err("Recipient address (to) is not configured".into());
     }
 
     let epub_bytes = tokio::fs::read(epub_path)
@@ -24,47 +31,66 @@ pub async fn deploy_book(config: &EmailConfig, epub_path: &Path, title: &str) ->
         .unwrap_or("book.epub")
         .to_string();
 
-    let content_type: ContentType = "application/epub+zip"
-        .parse()
-        .map_err(|e| format!("Invalid content type: {e}"))?;
+    let raw = build_raw_message(from, to, title, &epub_bytes, &filename);
 
-    let email = Message::builder()
-        .from(
-            config
-                .from
-                .parse()
-                .map_err(|e| format!("Invalid from address '{}': {e}", config.from))?,
-        )
-        .to(config
-            .to
-            .parse()
-            .map_err(|e| format!("Invalid to address '{}': {e}", config.to))?)
-        .subject(title)
-        .multipart(
-            MultiPart::mixed()
-                .singlepart(SinglePart::plain(format!(
-                    "Please find '{filename}' attached."
-                )))
-                .singlepart(Attachment::new(filename).body(epub_bytes, content_type)),
-        )
-        .map_err(|e| format!("Failed to build email: {e}"))?;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send")
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({ "raw": raw }))
+        .send()
+        .await
+        .map_err(|e| format!("Gmail API request failed: {e}"))?;
 
-    let creds = Credentials::new(
-        config.smtp_username.clone(),
-        config.smtp_password.clone(),
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Gmail API error {status}: {body}"));
+    }
+
+    tracing::info!("Deployed '{title}' to {to}");
+    Ok(())
+}
+
+/// Build a base64url-encoded RFC 2822 MIME message for the Gmail API `raw` field.
+fn build_raw_message(
+    from: &str,
+    to: &str,
+    subject: &str,
+    epub_bytes: &[u8],
+    filename: &str,
+) -> String {
+    let boundary = "----=_Part_BookBuilder_0";
+
+    // Standard base64, split into 76-char lines per MIME spec.
+    let epub_b64 = STANDARD.encode(epub_bytes);
+    let epub_b64_wrapped = epub_b64
+        .as_bytes()
+        .chunks(76)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect::<Vec<_>>()
+        .join("\r\n");
+
+    let message = format!(
+        "From: {from}\r\n\
+         To: {to}\r\n\
+         Subject: {subject}\r\n\
+         MIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\
+         \r\n\
+         --{boundary}\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         \r\n\
+         Please find '{filename}' attached.\r\n\
+         \r\n\
+         --{boundary}\r\n\
+         Content-Type: application/epub+zip; name=\"{filename}\"\r\n\
+         Content-Disposition: attachment; filename=\"{filename}\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\
+         \r\n\
+         {epub_b64_wrapped}\r\n\
+         --{boundary}--"
     );
 
-    let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp_host)
-        .map_err(|e| format!("Failed to create SMTP transport: {e}"))?
-        .port(config.smtp_port)
-        .credentials(creds)
-        .build();
-
-    mailer
-        .send(email)
-        .await
-        .map_err(|e| format!("Failed to send email: {e}"))?;
-
-    tracing::info!("Deployed '{title}' to {}", config.to);
-    Ok(())
+    URL_SAFE_NO_PAD.encode(message.as_bytes())
 }

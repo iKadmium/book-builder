@@ -22,23 +22,42 @@ pub fn router() -> Router<AppState> {
 
 async fn pull(State(state): State<AppState>) -> Result<StatusCode, StatusCode> {
     let data_dir = state.data_dir.clone();
-    let (pat, repo_url) = {
+
+    let (repo_url, token_endpoint, creds) = {
         let cfg = state
             .config
             .read()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let url = format!(
+        let repo_url = format!(
             "{}/{}",
             cfg.forgejo.url.trim_end_matches('/'),
             cfg.forgejo.repo
         );
-        (cfg.forgejo.pat.clone(), url)
+        let token_endpoint = format!(
+            "{}/login/oauth/access_token",
+            cfg.forgejo.url.trim_end_matches('/')
+        );
+        let creds = cfg.forgejo.oauth.clone();
+        (repo_url, token_endpoint, creds)
+        // cfg (RwLockReadGuard) is dropped here
     };
+
+    let token = state
+        .oauth
+        .token(crate::oauth::Provider::Forgejo, &creds, &token_endpoint)
+        .await
+        .ok_or_else(|| {
+            tracing::error!(
+                "No valid Forgejo token — authorize first at /api/oauth/forgejo/authorize"
+            );
+            StatusCode::UNAUTHORIZED
+        })?;
+
     let catalogue = Arc::clone(&state.catalogue);
 
     tokio::task::spawn_blocking(move || -> Result<(), git2::Error> {
         // sync_repo clones on first run, pulls on subsequent runs.
-        git::sync_repo(&repo_url, &pat, &data_dir)?;
+        git::sync_repo(&repo_url, &token, &data_dir)?;
 
         // Snapshot per-book state that survives a rescan.
         struct Prev {
@@ -133,17 +152,17 @@ async fn deploy_book(
     State(state): State<AppState>,
     Path(title): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let (epub_path, email_cfg) = {
-        let guard = state
+    let (epub_path, from, to, token_endpoint, google_creds) = {
+        let catalogue = state
             .catalogue
             .read()
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?;
-        let book = guard
+        let book = catalogue
             .books
             .iter()
             .find(|b| b.title == title)
             .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?;
-        let path = book.epub_path.clone().ok_or_else(|| {
+        let epub_path = book.epub_path.clone().ok_or_else(|| {
             (
                 StatusCode::CONFLICT,
                 format!("'{title}' has not been built yet"),
@@ -153,10 +172,32 @@ async fn deploy_book(
             .config
             .read()
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?;
-        (path, cfg.email.clone())
+        (
+            epub_path,
+            cfg.email.from.clone(),
+            cfg.email.to.clone(),
+            "https://oauth2.googleapis.com/token".to_string(),
+            cfg.google.oauth.clone(),
+        )
     };
 
-    deploy::deploy_book(&email_cfg, &epub_path, &title)
+    let token = state
+        .oauth
+        .token(
+            crate::oauth::Provider::Google,
+            &google_creds,
+            &token_endpoint,
+        )
+        .await
+        .ok_or_else(|| {
+            tracing::error!("No Google token — authorize at /api/oauth/google/authorize");
+            (
+                StatusCode::UNAUTHORIZED,
+                "Google not connected — visit /api/oauth/google/authorize".into(),
+            )
+        })?;
+
+    deploy::deploy_book(&from, &to, &token, &epub_path, &title)
         .await
         .map_err(|e| {
             tracing::error!("deploy failed for '{title}': {e}");

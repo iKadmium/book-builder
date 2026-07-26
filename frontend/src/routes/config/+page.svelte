@@ -72,57 +72,58 @@
         />
       </label>
       <label class="label">
-        <span>Personal Access Token</span>
+        <span>Client ID</span>
+        <input
+          class="input"
+          type="text"
+          bind:value={cfg.forgejo.oauth.client_id}
+        />
+      </label>
+      <label class="label">
+        <span>Client Secret</span>
         <input
           class="input"
           type="password"
-          bind:value={cfg.forgejo.pat}
+          bind:value={cfg.forgejo.oauth.client_secret}
           autocomplete="current-password"
         />
       </label>
+      <a href="/api/oauth/forgejo/authorize" class="btn preset-tonal text-sm">
+        Connect to Forgejo
+      </a>
+    </section>
+
+    <!-- Google -->
+    <section class="card preset-filled-surface-100-900 p-6 space-y-4">
+      <h2 class="h3">Google</h2>
+      <label class="label">
+        <span>Client ID</span>
+        <input
+          class="input"
+          type="text"
+          bind:value={cfg.google.oauth.client_id}
+        />
+      </label>
+      <label class="label">
+        <span>Client Secret</span>
+        <input
+          class="input"
+          type="password"
+          bind:value={cfg.google.oauth.client_secret}
+          autocomplete="current-password"
+        />
+      </label>
+      <a href="/api/oauth/google/authorize" class="btn preset-tonal text-sm">
+        Connect to Google
+      </a>
     </section>
 
     <!-- Email / Deploy -->
     <section class="card preset-filled-surface-100-900 p-6 space-y-4">
       <h2 class="h3">Email (Deploy)</h2>
-      <div class="grid grid-cols-2 gap-4">
-        <label class="label col-span-2 sm:col-span-1">
-          <span>SMTP Host</span>
-          <input
-            class="input"
-            type="text"
-            bind:value={cfg.email.smtp_host}
-            placeholder="smtp.gmail.com"
-          />
-        </label>
-        <label class="label col-span-2 sm:col-span-1">
-          <span>SMTP Port</span>
-          <input
-            class="input"
-            type="number"
-            bind:value={cfg.email.smtp_port}
-            min="1"
-            max="65535"
-          />
-        </label>
-      </div>
-      <label class="label">
-        <span>SMTP Username</span>
-        <input
-          class="input"
-          type="email"
-          bind:value={cfg.email.smtp_username}
-        />
-      </label>
-      <label class="label">
-        <span>SMTP Password</span>
-        <input
-          class="input"
-          type="password"
-          bind:value={cfg.email.smtp_password}
-          autocomplete="current-password"
-        />
-      </label>
+      <p class="text-sm opacity-60">
+        Sent via the Gmail API using the Google account connected above.
+      </p>
       <label class="label">
         <span>From address</span>
         <input class="input" type="email" bind:value={cfg.email.from} />
