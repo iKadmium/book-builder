@@ -1,38 +1,38 @@
 <script lang="ts">
-  import { AppBar } from "@skeletonlabs/skeleton-svelte";
-  import type { PageData } from "./$types";
-  import type { AppConfig } from "$lib/types";
+import { AppBar } from "@skeletonlabs/skeleton-svelte";
+import type { AppConfig } from "$lib/types";
+import type { PageData } from "./$types";
 
-  let { data }: { data: PageData } = $props();
+let { data }: { data: PageData } = $props();
 
-  // Deep clone so edits don't mutate the load data directly
-  let cfg: AppConfig = $state(JSON.parse(JSON.stringify(data)));
-  let saving = $state(false);
-  let saved = $state(false);
-  let error = $state("");
+// Deep clone so edits don't mutate the load data directly
+let cfg: AppConfig = $state(JSON.parse(JSON.stringify(data)));
+let saving = $state(false);
+let saved = $state(false);
+let error = $state("");
 
-  async function save() {
-    saving = true;
-    saved = false;
-    error = "";
-    try {
-      const res = await fetch("/api/config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(cfg),
-      });
-      if (res.ok) {
-        saved = true;
-        setTimeout(() => (saved = false), 3000);
-      } else {
-        error = await res.text();
-      }
-    } catch (e) {
-      error = String(e);
-    } finally {
-      saving = false;
-    }
-  }
+async function save() {
+	saving = true;
+	saved = false;
+	error = "";
+	try {
+		const res = await fetch("/api/config", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(cfg),
+		});
+		if (res.ok) {
+			saved = true;
+			setTimeout(() => (saved = false), 3000);
+		} else {
+			error = await res.text();
+		}
+	} catch (e) {
+		error = String(e);
+	} finally {
+		saving = false;
+	}
+}
 </script>
 
 <div class="flex flex-col min-h-screen">

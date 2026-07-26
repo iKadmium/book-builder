@@ -1,75 +1,72 @@
 <script lang="ts">
-  import { AppBar } from "@skeletonlabs/skeleton-svelte";
-  import { invalidateAll } from "$app/navigation";
-  import type { PageData } from "./$types";
+import { AppBar } from "@skeletonlabs/skeleton-svelte";
+import { invalidateAll } from "$app/navigation";
+import type { PageData } from "./$types";
 
-  let { data }: { data: PageData } = $props();
+let { data }: { data: PageData } = $props();
 
-  let pulling = $state(false);
-  let building = $state<Record<string, boolean>>({});
+let pulling = $state(false);
+let building = $state<Record<string, boolean>>({});
 
-  function fmt(iso: string | null): string {
-    if (!iso) return "Never";
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date(iso));
-  }
+function fmt(iso: string | null): string {
+	if (!iso) return "Never";
+	return new Intl.DateTimeFormat(undefined, {
+		dateStyle: "medium",
+		timeStyle: "short",
+	}).format(new Date(iso));
+}
 
-  function isUpToDate(
-    stamp: string | null,
-    lastUpdated: string | null,
-  ): boolean {
-    if (!stamp) return false;
-    if (!lastUpdated) return true;
-    return new Date(stamp) >= new Date(lastUpdated);
-  }
+function isUpToDate(stamp: string | null, lastUpdated: string | null): boolean {
+	if (!stamp) return false;
+	if (!lastUpdated) return true;
+	return new Date(stamp) >= new Date(lastUpdated);
+}
 
-  async function pull() {
-    pulling = true;
-    try {
-      await fetch("/api/pull", { method: "POST" });
-      await invalidateAll();
-    } finally {
-      pulling = false;
-    }
-  }
+async function pull() {
+	pulling = true;
+	try {
+		await fetch("/api/pull", { method: "POST" });
+		await invalidateAll();
+	} finally {
+		pulling = false;
+	}
+}
 
-  async function buildBook(title: string) {
-    building[title] = true;
-    try {
-      const res = await fetch(`/api/build/${encodeURIComponent(title)}`, {
-        method: "POST",
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        alert(`Build failed: ${text}`);
-      } else {
-        await invalidateAll();
-      }
-    } finally {
-      building[title] = false;
-    }
-  }
+async function buildBook(title: string) {
+	building[title] = true;
+	try {
+		const res = await fetch(`/api/build/${encodeURIComponent(title)}`, {
+			method: "POST",
+		});
+		if (!res.ok) {
+			const text = await res.text();
+			alert(`Build failed: ${text}`);
+		} else {
+			await invalidateAll();
+		}
+	} finally {
+		building[title] = false;
+	}
+}
 
-  let deploying = $state<Record<string, boolean>>({});
+let deploying = $state<Record<string, boolean>>({});
 
-  async function deployBook(title: string) {
-    deploying[title] = true;
-    try {
-      const res = await fetch(`/api/deploy/${encodeURIComponent(title)}`, {
-        method: "POST",
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        alert(`Deploy failed: ${text}`);
-      } else {
-        await invalidateAll();
-      }
-    } finally {
-      deploying[title] = false;
-    }
-  }
+async function deployBook(title: string) {
+	deploying[title] = true;
+	try {
+		const res = await fetch(`/api/deploy/${encodeURIComponent(title)}`, {
+			method: "POST",
+		});
+		if (!res.ok) {
+			const text = await res.text();
+			alert(`Deploy failed: ${text}`);
+		} else {
+			await invalidateAll();
+		}
+	} finally {
+		deploying[title] = false;
+	}
+}
 </script>
 
 <div class="flex flex-col min-h-screen">
