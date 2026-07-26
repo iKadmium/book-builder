@@ -1,0 +1,15 @@
+# Rust build artefacts
+backend/target/
+
+# Frontend build artefacts and modules
+frontend/node_modules/
+frontend/build/
+frontend/.svelte-kit/
+
+# Runtime-only dirs (bind-mounted at container start)
+backend/data/
+backend/config/
+
+# Dev container and git
+.devcontainer/
+.git/

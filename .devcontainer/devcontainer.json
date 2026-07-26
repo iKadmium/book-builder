@@ -13,8 +13,23 @@
 			"source": "devcontainer-cargo-cache-${devcontainerId}",
 			"target": "/usr/local/cargo",
 			"type": "volume"
+		},
+		// Mirror the Docker Compose secret path. Create this file on your host
+		// with your Forgejo PAT: echo "your_pat_here" > ~/.secrets/forgejo_pat
+		// Concatenating HOME and USERPROFILE handles both Linux/Mac and Windows
+		// (only one is set per platform, the other expands to empty string).
+		{
+			"source": "${localEnv:HOME}${localEnv:USERPROFILE}/.secrets/forgejo_pat",
+			"target": "/run/secrets/forgejo_pat",
+			"type": "bind",
+			"readonly": true
 		}
 	],
+	// Set FORGEJO_URL to your Forgejo instance base URL.
+	"remoteEnv": {
+		"FORGEJO_URL": "http://192.168.68.95:3000",
+		"FORGEJO_REPO": "forgejoadmin/obsidian-vault"
+	},
 	"customizations": {
 		"vscode": {
 			"extensions": [
@@ -22,9 +37,13 @@
 				"svelte.svelte-vscode"
 			]
 		}
-	}
+	},
 	// Features to add to the dev container. More info: https://containers.dev/features.
-	// "features": {},
+	"features": {
+		"ghcr.io/devcontainers/features/docker-in-docker:2": {
+			"moby": false
+		}
+	},
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
 	// Use 'postCreateCommand' to run commands after the container is created.

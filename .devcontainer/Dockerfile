@@ -7,6 +7,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Install pandoc
+RUN apt-get update \
+    && apt-get install -y pandoc \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Enable corepack (ships with Node.js 16+)
 RUN corepack enable
 
