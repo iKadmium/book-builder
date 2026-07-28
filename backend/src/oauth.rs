@@ -254,10 +254,10 @@ impl OAuthManager {
     ) -> Option<String> {
         {
             let tokens = self.tokens.read().unwrap();
-            if let Some(t) = tokens.get(provider) {
-                if t.is_valid() {
-                    return Some(t.access_token.clone());
-                }
+            if let Some(t) = tokens.get(provider)
+                && t.is_valid()
+            {
+                return Some(t.access_token.clone());
             }
         }
         self.refresh(provider, creds, token_endpoint).await.ok()

@@ -136,11 +136,11 @@ async fn build_book(
             (StatusCode::INTERNAL_SERVER_ERROR, e)
         })?;
 
-    if let Ok(mut guard) = state.catalogue.write() {
-        if let Some(book) = guard.books.iter_mut().find(|b| b.title == title) {
-            book.last_built = Some(chrono::Utc::now());
-            book.epub_path = Some(epub_path);
-        }
+    if let Ok(mut guard) = state.catalogue.write()
+        && let Some(book) = guard.books.iter_mut().find(|b| b.title == title)
+    {
+        book.last_built = Some(chrono::Utc::now());
+        book.epub_path = Some(epub_path);
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -204,10 +204,10 @@ async fn deploy_book(
             (StatusCode::INTERNAL_SERVER_ERROR, e)
         })?;
 
-    if let Ok(mut guard) = state.catalogue.write() {
-        if let Some(book) = guard.books.iter_mut().find(|b| b.title == title) {
-            book.last_deployed = Some(chrono::Utc::now());
-        }
+    if let Ok(mut guard) = state.catalogue.write()
+        && let Some(book) = guard.books.iter_mut().find(|b| b.title == title)
+    {
+        book.last_deployed = Some(chrono::Utc::now());
     }
 
     Ok(StatusCode::NO_CONTENT)

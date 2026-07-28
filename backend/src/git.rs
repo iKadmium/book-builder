@@ -37,12 +37,6 @@ fn clone(url: &str, oauth_token: &str, path: &Path) -> Result<Repository, git2::
         .clone(url, path)
 }
 
-/// Pull the latest changes for an already-cloned repo at `data_dir`.
-pub fn pull_repo(data_dir: &Path, oauth_token: &str) -> Result<(), git2::Error> {
-    let repo = Repository::open(data_dir)?;
-    pull(&repo, oauth_token)
-}
-
 fn pull(repo: &Repository, oauth_token: &str) -> Result<(), git2::Error> {
     let mut remote = repo.find_remote("origin")?;
     remote.fetch(

@@ -96,7 +96,7 @@ fn latest_epub(data_dir: &Path, title: &str) -> (Option<PathBuf>, Option<DateTim
         Err(_) => return (None, None),
     };
 
-    let prefix = format!("{title}");
+    let prefix = title.to_string();
     let mut best: Option<(PathBuf, DateTime<Utc>)> = None;
 
     for entry in entries.flatten() {
@@ -117,10 +117,10 @@ fn latest_epub(data_dir: &Path, title: &str) -> (Option<PathBuf>, Option<DateTim
                     0,
                 )
             });
-        if let Some(ts) = modified {
-            if best.as_ref().map_or(true, |(_, prev)| ts > *prev) {
-                best = Some((path, ts));
-            }
+        if let Some(ts) = modified
+            && best.as_ref().is_none_or(|(_, prev)| ts > *prev)
+        {
+            best = Some((path, ts));
         }
     }
 

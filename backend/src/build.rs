@@ -32,6 +32,7 @@ pub async fn build(data_dir: &Path, book_root: &Path, title: &str) -> Result<Pat
         let content = fs::read_to_string(&note_path)
             .await
             .map_err(|e| format!("failed to read Authors Note.md: {e}"))?;
+        md.push_str("# Author's Note\n\n");
         md.push_str(&content);
         md.push_str("\n\n");
     }
@@ -74,7 +75,7 @@ pub async fn build(data_dir: &Path, book_root: &Path, title: &str) -> Result<Pat
 
     let result = Command::new("pandoc")
         .current_dir(book_root)
-        .args(["-f", "markdown"])
+        .args(["-f", "markdown-yaml_metadata_block"])
         .arg(&tmp_path)
         .args(["-d", "pandoc.yaml"])
         .arg("-V")
