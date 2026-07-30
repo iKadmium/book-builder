@@ -93,9 +93,17 @@ struct TokenResponse {
     expires_in: Option<i64>,
 }
 
+#[derive(Deserialize)]
+struct OAuthErrorResponse {
+    error: String,
+    #[serde(default)]
+    error_description: Option<String>,
+}
+
 struct PendingAuth {
     provider: Provider,
     pkce_verifier: String,
+    created_at: std::time::Instant,
 }
 
 // ── OAuthManager ─────────────────────────────────────────────────────────────
@@ -127,6 +135,10 @@ impl OAuthManager {
 
     /// Build the provider authorization redirect URL and record the in-flight
     /// PKCE state.  Returns `(redirect_url, csrf_state)`.
+    ///
+    /// `extra_params` is appended verbatim as additional percent-encoded query
+    /// parameters, e.g. `&[("access_type", "offline"), ("prompt", "consent")]`
+    /// for Google to request a refresh token.
     pub fn authorization_url(
         &self,
         provider: Provider,
@@ -134,32 +146,43 @@ impl OAuthManager {
         auth_endpoint: &str,
         redirect_uri: &str,
         scopes: &[&str],
+        extra_params: &[(&str, &str)],
     ) -> (String, String) {
         let state = random_token();
         let (verifier, challenge) = pkce_pair();
 
-        self.pending.lock().unwrap().insert(
-            state.clone(),
-            PendingAuth {
-                provider,
-                pkce_verifier: verifier,
-            },
-        );
+        {
+            let mut pending = self.pending.lock().unwrap();
+            // Prune stale entries (older than 10 minutes) to avoid unbounded growth.
+            let now = std::time::Instant::now();
+            pending.retain(|_, v| {
+                now.duration_since(v.created_at) < std::time::Duration::from_secs(600)
+            });
+            pending.insert(
+                state.clone(),
+                PendingAuth {
+                    provider,
+                    pkce_verifier: verifier,
+                    created_at: now,
+                },
+            );
+        }
 
-        let url = format!(
-            "{auth_endpoint}?response_type=code\
-             &client_id={}\
-             &redirect_uri={}\
-             &scope={}\
-             &state={state}\
-             &code_challenge={challenge}\
-             &code_challenge_method=S256",
-            pct(&creds.client_id),
-            pct(redirect_uri),
-            pct(&scopes.join(" ")),
-        );
+        let mut url = reqwest::Url::parse(auth_endpoint)
+            .unwrap_or_else(|e| panic!("Invalid auth endpoint URL '{auth_endpoint}': {e}"));
+        url.query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", &creds.client_id)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("scope", &scopes.join(" "))
+            .append_pair("state", &state)
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256");
+        for (k, v) in extra_params {
+            url.query_pairs_mut().append_pair(k, v);
+        }
 
-        (url, state)
+        (url.into(), state)
     }
 
     /// Exchange an authorization code (from the provider callback) for tokens.
@@ -181,7 +204,7 @@ impl OAuthManager {
             (p.provider, p.pkce_verifier)
         };
 
-        let resp = self
+        let http_resp = self
             .http
             .post(token_endpoint)
             .form(&[
@@ -194,11 +217,9 @@ impl OAuthManager {
             ])
             .send()
             .await
-            .map_err(|e| format!("Token request failed: {e}"))?
-            .json::<TokenResponse>()
-            .await
-            .map_err(|e| format!("Token response parse failed: {e}"))?;
+            .map_err(|e| format!("Token request failed: {e}"))?;
 
+        let resp = parse_token_response(http_resp).await?;
         self.persist(provider, resp);
         Ok(provider)
     }
@@ -218,7 +239,7 @@ impl OAuthManager {
             .and_then(|t| t.refresh_token.clone())
             .ok_or_else(|| "No refresh token stored for this provider".to_string())?;
 
-        let resp = self
+        let http_resp = self
             .http
             .post(token_endpoint)
             .form(&[
@@ -229,10 +250,9 @@ impl OAuthManager {
             ])
             .send()
             .await
-            .map_err(|e| format!("Refresh request failed: {e}"))?
-            .json::<TokenResponse>()
-            .await
-            .map_err(|e| format!("Refresh response parse failed: {e}"))?;
+            .map_err(|e| format!("Refresh request failed: {e}"))?;
+
+        let resp = parse_token_response(http_resp).await?;
 
         let access_token = resp.access_token.clone();
         // Keep the old refresh token if the server didn't issue a new one.
@@ -314,7 +334,42 @@ fn save_token_file(path: &Path, tokens: &TokenFile) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(tokens).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())
+    // Atomic write: write to a sibling .tmp file then rename so a crash
+    // mid-write cannot leave tokens.json in a corrupt/partial state.
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+// ── HTTP helpers ──────────────────────────────────────────────────────────────
+
+/// Deserialize a token-endpoint response, surfacing OAuth error bodies as
+/// human-readable errors rather than confusing "missing field" parse failures.
+async fn parse_token_response(resp: reqwest::Response) -> Result<TokenResponse, String> {
+    let status = resp.status();
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read token response body: {e}"))?;
+
+    if !status.is_success() {
+        // Try to extract a structured OAuth error first.
+        if let Ok(err) = serde_json::from_slice::<OAuthErrorResponse>(&body) {
+            let desc = err
+                .error_description
+                .filter(|d| !d.is_empty())
+                .map(|d| format!(": {d}"))
+                .unwrap_or_default();
+            return Err(format!("OAuth error {}{}", err.error, desc));
+        }
+        return Err(format!(
+            "Token endpoint returned HTTP {status}: {}",
+            String::from_utf8_lossy(&body)
+        ));
+    }
+
+    serde_json::from_slice::<TokenResponse>(&body)
+        .map_err(|e| format!("Token response parse failed: {e}"))
 }
 
 // ── Crypto helpers ────────────────────────────────────────────────────────────
@@ -331,9 +386,4 @@ fn pkce_pair() -> (String /* verifier */, String /* challenge */) {
     let verifier = URL_SAFE_NO_PAD.encode(bytes);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     (verifier, challenge)
-}
-
-/// Percent-encode a value for use in a URL query string.
-fn pct(s: &str) -> String {
-    percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
 }

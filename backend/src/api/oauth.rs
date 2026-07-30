@@ -52,10 +52,21 @@ async fn authorize(
     };
     drop(cfg);
 
-    let (url, _csrf) =
-        state
-            .oauth
-            .authorization_url(provider, &creds, &auth_endpoint, &redirect_uri, &scopes);
+    // Google requires access_type=offline to issue a refresh token, and
+    // prompt=consent to re-issue one on subsequent authorizations.
+    let extra: &[(&str, &str)] = match provider {
+        Provider::Google => &[("access_type", "offline"), ("prompt", "consent")],
+        _ => &[],
+    };
+
+    let (url, _csrf) = state.oauth.authorization_url(
+        provider,
+        &creds,
+        &auth_endpoint,
+        &redirect_uri,
+        &scopes,
+        extra,
+    );
 
     Ok(Redirect::to(&url))
 }
