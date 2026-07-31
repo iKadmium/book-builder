@@ -7,7 +7,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
-use aes_gcm::{Aes256Gcm, aead::{Aead, KeyInit}};
+use aes_gcm::{
+    Aes256Gcm,
+    aead::{Aead, KeyInit},
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
 use rand::Rng as _;
@@ -428,8 +431,7 @@ fn decrypt_tokens(data: &str, key: &[u8; 32]) -> Result<TokenFile, String> {
         n: String,
         c: String,
     }
-    let ef: EncryptedFile =
-        serde_json::from_str(data).map_err(|e| format!("Parse failed: {e}"))?;
+    let ef: EncryptedFile = serde_json::from_str(data).map_err(|e| format!("Parse failed: {e}"))?;
     if ef.v != 1 {
         return Err(format!("Unknown token file version: {}", ef.v));
     }

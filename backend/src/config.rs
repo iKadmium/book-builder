@@ -35,8 +35,7 @@ impl OAuth2Credentials {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct GoogleConfig {
-}
+pub struct GoogleConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ForgejoConfig {

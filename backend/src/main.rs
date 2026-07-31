@@ -30,6 +30,9 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() {
+    #[cfg(debug_assertions)]
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -70,8 +73,7 @@ async fn build_state() -> AppState {
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("tokens.json");
     let token_key = oauth::derive_key(
-        &std::env::var("TOKEN_ENCRYPTION_KEY")
-            .expect("TOKEN_ENCRYPTION_KEY env var must be set"),
+        &std::env::var("TOKEN_ENCRYPTION_KEY").expect("TOKEN_ENCRYPTION_KEY env var must be set"),
     );
     let oauth = oauth::OAuthManager::load(tokens_path, token_key);
 
@@ -100,11 +102,7 @@ async fn build_state() -> AppState {
         );
         // Await the token lookup directly — build_state is async.
         let token = oauth
-            .token(
-                oauth::Provider::Forgejo,
-                &forgejo_creds,
-                &token_endpoint,
-            )
+            .token(oauth::Provider::Forgejo, &forgejo_creds, &token_endpoint)
             .await;
         if let Some(token) = token {
             if let Err(e) = git::sync_repo(&repo_url, &token, &data_dir) {
