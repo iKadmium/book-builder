@@ -21,13 +21,16 @@ pub struct Book {
     pub chapters: Vec<Chapter>,
     /// Time of the most recent commit that touched any file in this book's folder.
     pub last_updated: Option<DateTime<Utc>>,
-    /// Time the EPUB was last successfully built.
+    /// Time of the last successful build (epub + markdown).
     pub last_built: Option<DateTime<Utc>>,
     /// Time the EPUB was last successfully deployed.
     pub last_deployed: Option<DateTime<Utc>>,
     /// Path to the most recently built EPUB (not serialised to JSON).
     #[serde(skip)]
     pub epub_path: Option<PathBuf>,
+    /// Path to the most recently built markdown file (not serialised to JSON).
+    #[serde(skip)]
+    pub md_path: Option<PathBuf>,
 }
 
 /// The full catalogue: the books plus when they were last refreshed from the repo.
@@ -71,6 +74,7 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
             .and_then(|r| last_updated_in_repo(r, &title));
         let chapters = scan_chapters(&path);
         let (epub_path, last_built) = latest_epub(data_dir, &title);
+        let md_path = latest_md(data_dir, &title);
         books.push(Book {
             title,
             root: path,
@@ -79,6 +83,7 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
             last_built,
             last_deployed: None,
             epub_path,
+            md_path,
         });
     }
 
@@ -128,6 +133,25 @@ fn latest_epub(data_dir: &Path, title: &str) -> (Option<PathBuf>, Option<DateTim
         Some((path, ts)) => (Some(path), Some(ts)),
         None => (None, None),
     }
+}
+
+fn latest_md(data_dir: &Path, title: &str) -> Option<PathBuf> {
+    let dist = data_dir.join("dist");
+    let entries = fs::read_dir(&dist).ok()?;
+    let prefix = title.to_string();
+    let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str())?.to_string();
+        if !name.starts_with(&prefix) || !name.ends_with(".md") {
+            continue;
+        }
+        let modified = fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+        if best.as_ref().is_none_or(|(_, prev)| modified > *prev) {
+            best = Some((path, modified));
+        }
+    }
+    best.map(|(p, _)| p)
 }
 
 /// Returns the timestamp of the most recent commit that touched any file

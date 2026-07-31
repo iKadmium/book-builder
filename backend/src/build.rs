@@ -24,41 +24,7 @@ pub async fn build(data_dir: &Path, book_root: &Path, title: &str) -> Result<Pat
 
     // ── Assemble markdown ─────────────────────────────────────────────────
 
-    let mut md = String::new();
-
-    // Optional author's note before the chapters
-    let note_path = book_root.join("Authors Note.md");
-    if note_path.exists() {
-        let content = fs::read_to_string(&note_path)
-            .await
-            .map_err(|e| format!("failed to read Authors Note.md: {e}"))?;
-        md.push_str("# Author's Note\n\n");
-        md.push_str(&content);
-        md.push_str("\n\n");
-    }
-
-    // Collect and sort chapter files
-    let chapters_dir = book_root.join("Chapters");
-    let mut chapter_files: Vec<PathBuf> = Vec::new();
-    let mut entries = fs::read_dir(&chapters_dir)
-        .await
-        .map_err(|e| format!("failed to read Chapters dir: {e}"))?;
-    while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            chapter_files.push(path);
-        }
-    }
-    chapter_files.sort();
-
-    for (i, path) in chapter_files.iter().enumerate() {
-        md.push_str(&format!("# Chapter {}\n\n", i + 1));
-        let content = fs::read_to_string(path)
-            .await
-            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-        md.push_str(&content);
-        md.push_str("\n\n");
-    }
+    let md = assemble_markdown(&book_root).await?;
 
     // ── Write temp file ───────────────────────────────────────────────────
 
@@ -97,4 +63,73 @@ pub async fn build(data_dir: &Path, book_root: &Path, title: &str) -> Result<Pat
 
     tracing::info!("Built {output_path:?}");
     Ok(output_path)
+}
+
+/// Assembles the book as a single markdown file in `dist/`.
+/// Returns the path to the generated file.
+pub async fn build_markdown(
+    data_dir: &Path,
+    book_root: &Path,
+    title: &str,
+) -> Result<PathBuf, String> {
+    let data_dir = fs::canonicalize(data_dir)
+        .await
+        .map_err(|e| format!("failed to resolve data_dir: {e}"))?;
+    let book_root = fs::canonicalize(book_root)
+        .await
+        .map_err(|e| format!("failed to resolve book_root: {e}"))?;
+
+    let dist_dir = data_dir.join("dist");
+    fs::create_dir_all(&dist_dir)
+        .await
+        .map_err(|e| format!("failed to create dist dir: {e}"))?;
+
+    let date = Utc::now().format("%Y-%m-%d").to_string();
+    let md = assemble_markdown(&book_root).await?;
+
+    let output_path = dist_dir.join(format!("{title} {date}.md"));
+    fs::write(&output_path, &md)
+        .await
+        .map_err(|e| format!("failed to write markdown file: {e}"))?;
+
+    tracing::info!("Built {output_path:?}");
+    Ok(output_path)
+}
+
+async fn assemble_markdown(book_root: &Path) -> Result<String, String> {
+    let mut md = String::new();
+
+    let note_path = book_root.join("Authors Note.md");
+    if note_path.exists() {
+        let content = fs::read_to_string(&note_path)
+            .await
+            .map_err(|e| format!("failed to read Authors Note.md: {e}"))?;
+        md.push_str("# Author's Note\n\n");
+        md.push_str(&content);
+        md.push_str("\n\n");
+    }
+
+    let chapters_dir = book_root.join("Chapters");
+    let mut chapter_files: Vec<PathBuf> = Vec::new();
+    let mut entries = fs::read_dir(&chapters_dir)
+        .await
+        .map_err(|e| format!("failed to read Chapters dir: {e}"))?;
+    while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            chapter_files.push(path);
+        }
+    }
+    chapter_files.sort();
+
+    for (i, path) in chapter_files.iter().enumerate() {
+        md.push_str(&format!("# Chapter {}\n\n", i + 1));
+        let content = fs::read_to_string(path)
+            .await
+            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        md.push_str(&content);
+        md.push_str("\n\n");
+    }
+
+    Ok(md)
 }

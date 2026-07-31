@@ -2,8 +2,10 @@ use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Path, State},
-    http::StatusCode,
+    http::{StatusCode, header},
+    response::IntoResponse,
     routing::{get, post},
 };
 use serde::Serialize;
@@ -14,7 +16,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/pull", post(pull))
         .route("/build/{title}", post(build_book))
-        .route("/deploy/{title}", post(deploy_book))
+        .route("/deploy/kindle/{title}", post(deploy_kindle))
+        .route("/deploy/openwebui/{title}", post(deploy_openwebui))
+        .route("/download/{title}/epub", get(download_epub))
+        .route("/download/{title}/md", get(download_md))
         .route("/status", get(status))
 }
 
@@ -129,26 +134,29 @@ async fn build_book(
         .map(|b| b.root.clone())
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?;
 
-    let epub_path = build::build(&state.data_dir, &book_root, &title)
-        .await
-        .map_err(|e| {
-            tracing::error!("build failed for '{title}': {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, e)
-        })?;
+    let (epub_path, md_path) = tokio::try_join!(
+        build::build(&state.data_dir, &book_root, &title),
+        build::build_markdown(&state.data_dir, &book_root, &title),
+    )
+    .map_err(|e| {
+        tracing::error!("build failed for '{title}': {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, e)
+    })?;
 
     if let Ok(mut guard) = state.catalogue.write()
         && let Some(book) = guard.books.iter_mut().find(|b| b.title == title)
     {
         book.last_built = Some(chrono::Utc::now());
         book.epub_path = Some(epub_path);
+        book.md_path = Some(md_path);
     }
 
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── deploy ───────────────────────────────────────────────────────────────────
+// ── deploy kindle ────────────────────────────────────────────────────────────
 
-async fn deploy_book(
+async fn deploy_kindle(
     State(state): State<AppState>,
     Path(title): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
@@ -211,6 +219,124 @@ async fn deploy_book(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── deploy open webui ────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct OpenWebUIResponse {
+    url: String,
+}
+
+async fn deploy_openwebui(
+    State(state): State<AppState>,
+    Path(title): Path<String>,
+) -> Result<Json<OpenWebUIResponse>, (StatusCode, String)> {
+    let md_path = state
+        .catalogue
+        .read()
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?
+        .books
+        .iter()
+        .find(|b| b.title == title)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?
+        .md_path
+        .clone()
+        .ok_or_else(|| {
+            (
+                StatusCode::CONFLICT,
+                format!("'{title}' has not been built yet"),
+            )
+        })?;
+
+    let url = deploy::deploy_to_openwebui(
+        &state.open_webui_endpoint,
+        &state.open_webui_api_key,
+        &md_path,
+        &title,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Open WebUI deploy failed for '{title}': {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, e)
+    })?;
+
+    Ok(Json(OpenWebUIResponse { url }))
+}
+
+// ── downloads ────────────────────────────────────────────────────────────────
+
+async fn download_epub(
+    State(state): State<AppState>,
+    Path(title): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let epub_path = state
+        .catalogue
+        .read()
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?
+        .books
+        .iter()
+        .find(|b| b.title == title)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?
+        .epub_path
+        .clone()
+        .ok_or_else(|| {
+            (
+                StatusCode::CONFLICT,
+                format!("'{title}' has not been built yet"),
+            )
+        })?;
+
+    serve_file(epub_path, "application/epub+zip").await
+}
+
+async fn download_md(
+    State(state): State<AppState>,
+    Path(title): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let md_path = state
+        .catalogue
+        .read()
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?
+        .books
+        .iter()
+        .find(|b| b.title == title)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?
+        .md_path
+        .clone()
+        .ok_or_else(|| {
+            (
+                StatusCode::CONFLICT,
+                format!("'{title}' has not been built yet"),
+            )
+        })?;
+
+    serve_file(md_path, "text/markdown").await
+}
+
+async fn serve_file(
+    path: std::path::PathBuf,
+    content_type: &'static str,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download")
+        .to_string();
+    let bytes = tokio::fs::read(&path).await.map_err(|e| {
+        tracing::error!("Failed to read {}: {e}", path.display());
+        (StatusCode::NOT_FOUND, format!("File not found: {e}"))
+    })?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type.to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        Body::from(bytes),
+    ))
 }
 
 // ── status ──────────────────────────────────────────────────────────────────

@@ -1,72 +1,104 @@
 <script lang="ts">
-import { AppBar } from "@skeletonlabs/skeleton-svelte";
-import { invalidateAll } from "$app/navigation";
-import type { PageData } from "./$types";
+  import { AppBar } from "@skeletonlabs/skeleton-svelte";
+  import { invalidateAll } from "$app/navigation";
+  import type { PageData } from "./$types";
 
-let { data }: { data: PageData } = $props();
+  let { data }: { data: PageData } = $props();
 
-let pulling = $state(false);
-let building = $state<Record<string, boolean>>({});
+  let pulling = $state(false);
+  let building = $state<Record<string, boolean>>({});
 
-function fmt(iso: string | null): string {
-	if (!iso) return "Never";
-	return new Intl.DateTimeFormat(undefined, {
-		dateStyle: "medium",
-		timeStyle: "short",
-	}).format(new Date(iso));
-}
+  function fmt(iso: string | null): string {
+    if (!iso) return "Never";
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(iso));
+  }
 
-function isUpToDate(stamp: string | null, lastUpdated: string | null): boolean {
-	if (!stamp) return false;
-	if (!lastUpdated) return true;
-	return new Date(stamp) >= new Date(lastUpdated);
-}
+  function isUpToDate(
+    stamp: string | null,
+    lastUpdated: string | null,
+  ): boolean {
+    if (!stamp) return false;
+    if (!lastUpdated) return true;
+    return new Date(stamp) >= new Date(lastUpdated);
+  }
 
-async function pull() {
-	pulling = true;
-	try {
-		await fetch("/api/pull", { method: "POST" });
-		await invalidateAll();
-	} finally {
-		pulling = false;
-	}
-}
+  async function pull() {
+    pulling = true;
+    try {
+      await fetch("/api/pull", { method: "POST" });
+      await invalidateAll();
+    } finally {
+      pulling = false;
+    }
+  }
 
-async function buildBook(title: string) {
-	building[title] = true;
-	try {
-		const res = await fetch(`/api/build/${encodeURIComponent(title)}`, {
-			method: "POST",
-		});
-		if (!res.ok) {
-			const text = await res.text();
-			alert(`Build failed: ${text}`);
-		} else {
-			await invalidateAll();
-		}
-	} finally {
-		building[title] = false;
-	}
-}
+  async function buildBook(title: string) {
+    building[title] = true;
+    try {
+      const res = await fetch(`/api/build/${encodeURIComponent(title)}`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        alert(`Build failed: ${text}`);
+      } else {
+        await invalidateAll();
+      }
+    } finally {
+      building[title] = false;
+    }
+  }
 
-let deploying = $state<Record<string, boolean>>({});
+  let deploying = $state<Record<string, boolean>>({});
 
-async function deployBook(title: string) {
-	deploying[title] = true;
-	try {
-		const res = await fetch(`/api/deploy/${encodeURIComponent(title)}`, {
-			method: "POST",
-		});
-		if (!res.ok) {
-			const text = await res.text();
-			alert(`Deploy failed: ${text}`);
-		} else {
-			await invalidateAll();
-		}
-	} finally {
-		deploying[title] = false;
-	}
-}
+  async function deployKindle(title: string) {
+    deploying[title] = true;
+    try {
+      const res = await fetch(
+        `/api/deploy/kindle/${encodeURIComponent(title)}`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        alert(`Kindle deploy failed: ${await res.text()}`);
+      } else {
+        await invalidateAll();
+      }
+    } finally {
+      deploying[title] = false;
+    }
+  }
+
+  async function deployOpenWebUI(title: string) {
+    deploying[title] = true;
+    try {
+      const res = await fetch(
+        `/api/deploy/openwebui/${encodeURIComponent(title)}`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        alert(`Open WebUI deploy failed: ${await res.text()}`);
+      } else {
+        const { url } = await res.json();
+        window.open(url, "_blank", "noopener");
+      }
+    } finally {
+      deploying[title] = false;
+    }
+  }
+
+  function downloadFile(title: string, format: "epub" | "md") {
+    const a = document.createElement("a");
+    a.href = `/api/download/${encodeURIComponent(title)}/${format}`;
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  let deployMenuOpen = $state<Record<string, boolean>>({});
 </script>
 
 <div class="flex flex-col min-h-screen">
@@ -114,13 +146,64 @@ async function deployBook(title: string) {
                 >
                   {building[title] ? "Building…" : "Build"}
                 </button>
-                <button
-                  class="btn preset-tonal"
-                  onclick={() => deployBook(title)}
-                  disabled={deploying[title]}
-                >
-                  {deploying[title] ? "Deploying…" : "Deploy"}
-                </button>
+                <div class="relative">
+                  <button
+                    class="btn preset-tonal"
+                    onclick={() =>
+                      (deployMenuOpen[title] = !deployMenuOpen[title])}
+                    disabled={deploying[title]}
+                  >
+                    {deploying[title] ? "Deploying…" : "Deploy ▾"}
+                  </button>
+                  {#if deployMenuOpen[title]}
+                    <!-- transparent backdrop closes on outside click -->
+                    <div
+                      class="fixed inset-0 z-40"
+                      role="presentation"
+                      onclick={() => (deployMenuOpen[title] = false)}
+                    ></div>
+                    <div
+                      class="card preset-filled-surface-200-800 absolute right-0 mt-1 p-2 shadow-lg min-w-44 z-50 space-y-1"
+                    >
+                      <button
+                        class="btn preset-ghost w-full justify-start text-sm"
+                        onclick={() => {
+                          deployMenuOpen[title] = false;
+                          deployKindle(title);
+                        }}
+                      >
+                        📧 Kindle
+                      </button>
+                      <button
+                        class="btn preset-ghost w-full justify-start text-sm"
+                        onclick={() => {
+                          deployMenuOpen[title] = false;
+                          deployOpenWebUI(title);
+                        }}
+                      >
+                        🤖 Open WebUI
+                      </button>
+                      <button
+                        class="btn preset-ghost w-full justify-start text-sm"
+                        onclick={() => {
+                          deployMenuOpen[title] = false;
+                          downloadFile(title, "epub");
+                        }}
+                      >
+                        ⬇ Download EPUB
+                      </button>
+                      <button
+                        class="btn preset-ghost w-full justify-start text-sm"
+                        onclick={() => {
+                          deployMenuOpen[title] = false;
+                          downloadFile(title, "md");
+                        }}
+                      >
+                        ⬇ Download MD
+                      </button>
+                    </div>
+                  {/if}
+                </div>
               </div>
             </div>
 

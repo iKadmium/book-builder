@@ -26,6 +26,9 @@ pub struct AppState {
     /// OAuth2 client credentials loaded from environment variables.
     pub forgejo_creds: config::OAuth2Credentials,
     pub google_creds: config::OAuth2Credentials,
+    /// Open WebUI connection details loaded from environment variables.
+    pub open_webui_endpoint: String,
+    pub open_webui_api_key: String,
 }
 
 #[tokio::main]
@@ -85,6 +88,8 @@ async fn build_state() -> AppState {
         client_id: std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default(),
         client_secret: std::env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default(),
     };
+    let open_webui_endpoint = std::env::var("OPEN_WEBUI_ENDPOINT").unwrap_or_default();
+    let open_webui_api_key = std::env::var("OPEN_WEBUI_API_KEY").unwrap_or_default();
 
     // Attempt an initial git sync using any token already on disk.
     // Tokens are in-memory only until the user completes the OAuth flow
@@ -126,6 +131,8 @@ async fn build_state() -> AppState {
         oauth,
         forgejo_creds,
         google_creds,
+        open_webui_endpoint,
+        open_webui_api_key,
         catalogue: std::sync::Arc::new(std::sync::RwLock::new(books::Catalogue {
             last_pull: initial_pull,
             books: scanned,
