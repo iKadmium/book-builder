@@ -77,7 +77,7 @@ async fn pull(State(state): State<AppState>) -> Result<StatusCode, StatusCode> {
                     .iter()
                     .map(|b| {
                         (
-                            b.title.clone(),
+                            b.folder_name.clone(),
                             Prev {
                                 last_built: b.last_built,
                                 last_deployed: b.last_deployed,
@@ -91,7 +91,7 @@ async fn pull(State(state): State<AppState>) -> Result<StatusCode, StatusCode> {
 
         let mut updated = books::scan(&data_dir);
         for book in &mut updated {
-            if let Some(p) = prev.get(&book.title) {
+            if let Some(p) = prev.get(&book.folder_name) {
                 book.last_built = p.last_built;
                 book.last_deployed = p.last_deployed;
                 book.epub_path = p.epub_path.clone();
@@ -124,19 +124,19 @@ async fn build_book(
     State(state): State<AppState>,
     Path(title): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let book_root = state
+    let (book_root, folder_name) = state
         .catalogue
         .read()
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?
         .books
         .iter()
-        .find(|b| b.title == title)
-        .map(|b| b.root.clone())
+        .find(|b| b.folder_name == title)
+        .map(|b| (b.root.clone(), b.folder_name.clone()))
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?;
 
     let (epub_path, md_path) = tokio::try_join!(
-        build::build(&state.data_dir, &book_root, &title),
-        build::build_markdown(&state.data_dir, &book_root, &title),
+        build::build(&state.data_dir, &book_root, &folder_name),
+        build::build_markdown(&state.data_dir, &book_root, &folder_name),
     )
     .map_err(|e| {
         tracing::error!("build failed for '{title}': {e}");
@@ -144,7 +144,7 @@ async fn build_book(
     })?;
 
     if let Ok(mut guard) = state.catalogue.write()
-        && let Some(book) = guard.books.iter_mut().find(|b| b.title == title)
+        && let Some(book) = guard.books.iter_mut().find(|b| b.folder_name == title)
     {
         book.last_built = Some(chrono::Utc::now());
         book.epub_path = Some(epub_path);
@@ -168,7 +168,7 @@ async fn deploy_kindle(
         let book = catalogue
             .books
             .iter()
-            .find(|b| b.title == title)
+            .find(|b| b.folder_name == title)
             .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?;
         let epub_path = book.epub_path.clone().ok_or_else(|| {
             (
@@ -213,7 +213,7 @@ async fn deploy_kindle(
         })?;
 
     if let Ok(mut guard) = state.catalogue.write()
-        && let Some(book) = guard.books.iter_mut().find(|b| b.title == title)
+        && let Some(book) = guard.books.iter_mut().find(|b| b.folder_name == title)
     {
         book.last_deployed = Some(chrono::Utc::now());
     }
@@ -238,7 +238,7 @@ async fn deploy_openwebui(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?
         .books
         .iter()
-        .find(|b| b.title == title)
+        .find(|b| b.folder_name == title)
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?
         .md_path
         .clone()
@@ -276,7 +276,7 @@ async fn download_epub(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?
         .books
         .iter()
-        .find(|b| b.title == title)
+        .find(|b| b.folder_name == title)
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?
         .epub_path
         .clone()
@@ -300,7 +300,7 @@ async fn download_md(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?
         .books
         .iter()
-        .find(|b| b.title == title)
+        .find(|b| b.folder_name == title)
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?
         .md_path
         .clone()
@@ -351,6 +351,7 @@ struct StatusResponse {
 
 #[derive(Serialize)]
 struct BookStatus {
+    title: String,
     chapters: Vec<ChapterStatus>,
     #[serde(rename = "wordCount")]
     word_count: usize,
@@ -398,8 +399,9 @@ async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse>, S
                 })
                 .collect();
             (
-                book.title.clone(),
+                book.folder_name.clone(),
                 BookStatus {
+                    title: book.title.clone(),
                     chapters,
                     word_count,
                     last_updated: book

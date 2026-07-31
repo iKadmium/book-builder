@@ -133,7 +133,7 @@
             <!-- Header -->
             <div class="flex items-start justify-between gap-4">
               <div>
-                <h2 class="h3">{title}</h2>
+                <h2 class="h3">{book.title}</h2>
                 <p class="text-sm opacity-60">
                   {book.wordCount.toLocaleString()} words
                 </p>

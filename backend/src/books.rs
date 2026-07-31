@@ -16,6 +16,9 @@ pub struct Chapter {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Book {
+    /// Stable identifier: the directory name. Used in API routes and file naming.
+    pub folder_name: String,
+    /// Display title read from `pandoc.yaml`; falls back to `folder_name`.
     pub title: String,
     pub root: PathBuf,
     pub chapters: Vec<Chapter>,
@@ -63,19 +66,21 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
         if !path.is_dir() || !path.join("pandoc.yaml").exists() {
             continue;
         }
-        let title = path
+        let folder_name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
+        let title = read_pandoc_title(&path).unwrap_or_else(|| folder_name.clone());
         let last_updated = repo
             .as_ref()
             .ok()
-            .and_then(|r| last_updated_in_repo(r, &title));
+            .and_then(|r| last_updated_in_repo(r, &folder_name));
         let chapters = scan_chapters(&path);
-        let (epub_path, last_built) = latest_epub(data_dir, &title);
-        let md_path = latest_md(data_dir, &title);
+        let (epub_path, last_built) = latest_epub(data_dir, &folder_name);
+        let md_path = latest_md(data_dir, &folder_name);
         books.push(Book {
+            folder_name,
             title,
             root: path,
             chapters,
@@ -87,8 +92,33 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
         });
     }
 
-    books.sort_by(|a, b| a.title.cmp(&b.title));
+    books.sort_by(|a, b| a.folder_name.cmp(&b.folder_name));
     books
+}
+
+/// Read the `metadata.title` value from a book's `pandoc.yaml`.
+fn read_pandoc_title(book_root: &Path) -> Option<String> {
+    let content = fs::read_to_string(book_root.join("pandoc.yaml")).ok()?;
+    let mut in_metadata = false;
+    for line in content.lines() {
+        if line.trim_end() == "metadata:" {
+            in_metadata = true;
+            continue;
+        }
+        if in_metadata {
+            if line.starts_with(' ') || line.starts_with('\t') {
+                if let Some(rest) = line.trim().strip_prefix("title:") {
+                    let val = rest.trim().trim_matches('"').trim_matches('\'').to_string();
+                    if !val.is_empty() {
+                        return Some(val);
+                    }
+                }
+            } else {
+                in_metadata = false;
+            }
+        }
+    }
+    None
 }
 
 /// Find the most recently modified `{title}*.epub` in `data_dir/dist/`.
