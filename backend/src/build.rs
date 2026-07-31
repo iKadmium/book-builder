@@ -122,8 +122,20 @@ async fn assemble_markdown(book_root: &Path) -> Result<String, String> {
     }
     chapter_files.sort();
 
-    for (i, path) in chapter_files.iter().enumerate() {
-        md.push_str(&format!("# Chapter {}\n\n", i + 1));
+    let mut chapter_num = 0;
+    for path in &chapter_files {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let heading = if stem == "Epilogue" {
+            "# Epilogue".to_string()
+        } else {
+            chapter_num += 1;
+            format!("# Chapter {chapter_num}")
+        };
+        md.push_str(&heading);
+        md.push_str("\n\n");
         let content = fs::read_to_string(path)
             .await
             .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
