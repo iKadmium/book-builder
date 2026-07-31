@@ -71,23 +71,10 @@ async function save() {
           placeholder="owner/books"
         />
       </label>
-      <label class="label">
-        <span>Client ID</span>
-        <input
-          class="input"
-          type="text"
-          bind:value={cfg.forgejo.oauth.client_id}
-        />
-      </label>
-      <label class="label">
-        <span>Client Secret</span>
-        <input
-          class="input"
-          type="password"
-          bind:value={cfg.forgejo.oauth.client_secret}
-          autocomplete="current-password"
-        />
-      </label>
+      <p class="text-sm opacity-60">
+        OAuth client credentials are configured via <code>FORGEJO_CLIENT_ID</code> and
+        <code>FORGEJO_CLIENT_SECRET</code> environment variables.
+      </p>
       <a href="/api/oauth/forgejo/authorize" class="btn preset-tonal text-sm">
         Connect to Forgejo
       </a>
@@ -96,23 +83,10 @@ async function save() {
     <!-- Google -->
     <section class="card preset-filled-surface-100-900 p-6 space-y-4">
       <h2 class="h3">Google</h2>
-      <label class="label">
-        <span>Client ID</span>
-        <input
-          class="input"
-          type="text"
-          bind:value={cfg.google.oauth.client_id}
-        />
-      </label>
-      <label class="label">
-        <span>Client Secret</span>
-        <input
-          class="input"
-          type="password"
-          bind:value={cfg.google.oauth.client_secret}
-          autocomplete="current-password"
-        />
-      </label>
+      <p class="text-sm opacity-60">
+        OAuth client credentials are configured via <code>GOOGLE_CLIENT_ID</code> and
+        <code>GOOGLE_CLIENT_SECRET</code> environment variables.
+      </p>
       <a href="/api/oauth/google/authorize" class="btn preset-tonal text-sm">
         Connect to Google
       </a>

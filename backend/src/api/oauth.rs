@@ -39,7 +39,7 @@ async fn authorize(
                 cfg.forgejo.url.trim_end_matches('/')
             ),
             vec!["read:repository"],
-            cfg.forgejo.oauth.clone(),
+            state.forgejo_creds.clone(),
         ),
         Provider::Google => (
             "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
@@ -47,7 +47,7 @@ async fn authorize(
                 "https://www.googleapis.com/auth/drive.file",
                 "https://www.googleapis.com/auth/gmail.send",
             ],
-            cfg.google.oauth.clone(),
+            state.google_creds.clone(),
         ),
     };
     drop(cfg);
@@ -117,11 +117,11 @@ async fn callback(
                     "{}/login/oauth/access_token",
                     cfg.forgejo.url.trim_end_matches('/')
                 ),
-                cfg.forgejo.oauth.clone(),
+                state.forgejo_creds.clone(),
             ),
             Provider::Google => (
                 "https://oauth2.googleapis.com/token".to_string(),
-                cfg.google.oauth.clone(),
+                state.google_creds.clone(),
             ),
         }
         // cfg (RwLockReadGuard) is dropped here

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
+use aes_gcm::{Aes256Gcm, aead::{Aead, KeyInit}};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
 use rand::Rng as _;
@@ -119,17 +120,20 @@ pub struct OAuthManager {
     /// In-flight authorization requests: csrf_state → pending PKCE data.
     pending: Mutex<HashMap<String, PendingAuth>>,
     http: reqwest::Client,
+    encryption_key: [u8; 32],
 }
 
 impl OAuthManager {
     /// Create a manager, loading any previously saved tokens from `tokens_path`.
-    pub fn load(tokens_path: PathBuf) -> Arc<Self> {
-        let tokens = load_token_file(&tokens_path);
+    /// `encryption_key` is a 32-byte AES-256-GCM key; derive one with [`derive_key`].
+    pub fn load(tokens_path: PathBuf, encryption_key: [u8; 32]) -> Arc<Self> {
+        let tokens = load_token_file(&tokens_path, &encryption_key);
         Arc::new(Self {
             tokens: RwLock::new(tokens),
             tokens_path,
             pending: Mutex::new(HashMap::new()),
             http: reqwest::Client::new(),
+            encryption_key,
         })
     }
 
@@ -299,7 +303,7 @@ impl OAuthManager {
         };
         let mut tokens = self.tokens.write().unwrap();
         tokens.set(provider, token_set);
-        if let Err(e) = save_token_file(&self.tokens_path, &tokens) {
+        if let Err(e) = save_token_file(&self.tokens_path, &tokens, &self.encryption_key) {
             tracing::warn!(
                 "Failed to persist tokens to {}: {e}",
                 self.tokens_path.display()
@@ -310,18 +314,21 @@ impl OAuthManager {
 
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
-fn load_token_file(path: &Path) -> TokenFile {
+fn load_token_file(path: &Path, key: &[u8; 32]) -> TokenFile {
     if !path.exists() {
         return TokenFile::default();
     }
     match std::fs::read_to_string(path) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
-            tracing::warn!(
-                "Could not parse {}: {e} — starting with empty token store",
-                path.display()
-            );
-            TokenFile::default()
-        }),
+        Ok(s) => match decrypt_tokens(&s, key) {
+            Ok(tf) => tf,
+            Err(e) => {
+                tracing::warn!(
+                    "Could not decrypt {}: {e} — starting with empty token store",
+                    path.display()
+                );
+                TokenFile::default()
+            }
+        },
         Err(e) => {
             tracing::warn!("Could not read {}: {e}", path.display());
             TokenFile::default()
@@ -329,15 +336,14 @@ fn load_token_file(path: &Path) -> TokenFile {
     }
 }
 
-fn save_token_file(path: &Path, tokens: &TokenFile) -> Result<(), String> {
+fn save_token_file(path: &Path, tokens: &TokenFile, key: &[u8; 32]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let json = serde_json::to_string_pretty(tokens).map_err(|e| e.to_string())?;
-    // Atomic write: write to a sibling .tmp file then rename so a crash
-    // mid-write cannot leave tokens.json in a corrupt/partial state.
+    let encrypted = encrypt_tokens(tokens, key)?;
+    // Atomic write: write to a sibling .tmp file then rename.
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, encrypted).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
@@ -386,4 +392,60 @@ fn pkce_pair() -> (String /* verifier */, String /* challenge */) {
     let verifier = URL_SAFE_NO_PAD.encode(bytes);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     (verifier, challenge)
+}
+
+// ── Token encryption ──────────────────────────────────────────────────────────
+
+/// Derive a 32-byte AES-256-GCM key from an arbitrary secret string via SHA-256.
+pub fn derive_key(secret: &str) -> [u8; 32] {
+    Sha256::digest(secret.as_bytes()).into()
+}
+
+fn encrypt_tokens(tokens: &TokenFile, key: &[u8; 32]) -> Result<String, String> {
+    let plaintext = serde_json::to_vec(tokens).map_err(|e| e.to_string())?;
+    let mut nonce_bytes = [0u8; 12];
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let cipher = Aes256Gcm::new_from_slice(key).expect("key is exactly 32 bytes");
+    let nonce = nonce_bytes
+        .as_slice()
+        .try_into()
+        .expect("nonce is exactly 12 bytes");
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext.as_ref())
+        .map_err(|e| format!("Encryption failed: {e}"))?;
+    let payload = serde_json::json!({
+        "v": 1,
+        "n": URL_SAFE_NO_PAD.encode(nonce_bytes),
+        "c": URL_SAFE_NO_PAD.encode(ciphertext),
+    });
+    serde_json::to_string(&payload).map_err(|e| e.to_string())
+}
+
+fn decrypt_tokens(data: &str, key: &[u8; 32]) -> Result<TokenFile, String> {
+    #[derive(Deserialize)]
+    struct EncryptedFile {
+        v: u32,
+        n: String,
+        c: String,
+    }
+    let ef: EncryptedFile =
+        serde_json::from_str(data).map_err(|e| format!("Parse failed: {e}"))?;
+    if ef.v != 1 {
+        return Err(format!("Unknown token file version: {}", ef.v));
+    }
+    let nonce_bytes = URL_SAFE_NO_PAD
+        .decode(&ef.n)
+        .map_err(|e| format!("Nonce decode failed: {e}"))?;
+    let ciphertext = URL_SAFE_NO_PAD
+        .decode(&ef.c)
+        .map_err(|e| format!("Ciphertext decode failed: {e}"))?;
+    let cipher = Aes256Gcm::new_from_slice(key).expect("key is exactly 32 bytes");
+    let nonce: aes_gcm::Nonce<_> = nonce_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "Nonce has wrong length".to_string())?;
+    let plaintext = cipher
+        .decrypt(&nonce, ciphertext.as_ref())
+        .map_err(|e| format!("Decryption failed: {e}"))?;
+    serde_json::from_slice(&plaintext).map_err(|e| format!("Token file parse failed: {e}"))
 }

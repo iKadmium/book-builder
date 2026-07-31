@@ -37,7 +37,7 @@ async fn pull(State(state): State<AppState>) -> Result<StatusCode, StatusCode> {
             "{}/login/oauth/access_token",
             cfg.forgejo.url.trim_end_matches('/')
         );
-        let creds = cfg.forgejo.oauth.clone();
+        let creds = state.forgejo_creds.clone();
         (repo_url, token_endpoint, creds)
         // cfg (RwLockReadGuard) is dropped here
     };
@@ -177,7 +177,7 @@ async fn deploy_book(
             cfg.email.from.clone(),
             cfg.email.to.clone(),
             "https://oauth2.googleapis.com/token".to_string(),
-            cfg.google.oauth.clone(),
+            state.google_creds.clone(),
         )
     };
 

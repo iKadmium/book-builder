@@ -5,8 +5,8 @@ export const ssr = false;
 
 const empty: AppConfig = {
 	data_dir: "data",
-	forgejo: { url: "", repo: "", oauth: { client_id: "", client_secret: "" } },
-	google: { oauth: { client_id: "", client_secret: "" } },
+	forgejo: { url: "", repo: "" },
+	google: {},
 	email: { from: "", to: "" },
 };
 

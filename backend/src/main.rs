@@ -23,6 +23,9 @@ pub struct AppState {
     pub catalogue: books::SharedCatalogue,
     /// OAuth2 token manager (file-backed, shared across providers).
     pub oauth: std::sync::Arc<oauth::OAuthManager>,
+    /// OAuth2 client credentials loaded from environment variables.
+    pub forgejo_creds: config::OAuth2Credentials,
+    pub google_creds: config::OAuth2Credentials,
 }
 
 #[tokio::main]
@@ -66,13 +69,26 @@ async fn build_state() -> AppState {
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("tokens.json");
-    let oauth = oauth::OAuthManager::load(tokens_path);
+    let token_key = oauth::derive_key(
+        &std::env::var("TOKEN_ENCRYPTION_KEY")
+            .expect("TOKEN_ENCRYPTION_KEY env var must be set"),
+    );
+    let oauth = oauth::OAuthManager::load(tokens_path, token_key);
+
+    let forgejo_creds = config::OAuth2Credentials {
+        client_id: std::env::var("FORGEJO_CLIENT_ID").unwrap_or_default(),
+        client_secret: std::env::var("FORGEJO_CLIENT_SECRET").unwrap_or_default(),
+    };
+    let google_creds = config::OAuth2Credentials {
+        client_id: std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default(),
+        client_secret: std::env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default(),
+    };
 
     // Attempt an initial git sync using any token already on disk.
     // Tokens are in-memory only until the user completes the OAuth flow
     // (GET /api/oauth/forgejo/authorize), so this is best-effort.
     let mut initial_pull: Option<chrono::DateTime<chrono::Utc>> = None;
-    if cfg.forgejo.oauth.is_configured() && !cfg.forgejo.url.is_empty() {
+    if forgejo_creds.is_configured() && !cfg.forgejo.url.is_empty() {
         let token_endpoint = format!(
             "{}/login/oauth/access_token",
             cfg.forgejo.url.trim_end_matches('/')
@@ -86,7 +102,7 @@ async fn build_state() -> AppState {
         let token = oauth
             .token(
                 oauth::Provider::Forgejo,
-                &cfg.forgejo.oauth,
+                &forgejo_creds,
                 &token_endpoint,
             )
             .await;
@@ -110,6 +126,8 @@ async fn build_state() -> AppState {
         config_path,
         data_dir,
         oauth,
+        forgejo_creds,
+        google_creds,
         catalogue: std::sync::Arc::new(std::sync::RwLock::new(books::Catalogue {
             last_pull: initial_pull,
             books: scanned,

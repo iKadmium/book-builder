@@ -15,19 +15,12 @@ export interface StatusData {
 	lastPull: string | null;
 	books: Record<string, Book>;
 }
-export interface OAuth2Credentials {
-	client_id: string;
-	client_secret: string;
-}
-
 export interface ForgejoConfig {
 	url: string;
 	repo: string;
-	oauth: OAuth2Credentials;
 }
 
 export interface GoogleConfig {
-	oauth: OAuth2Credentials;
 }
 
 export interface EmailConfig {

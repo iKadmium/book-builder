@@ -36,8 +36,6 @@ impl OAuth2Credentials {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GoogleConfig {
-    #[serde(default)]
-    pub oauth: OAuth2Credentials,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -46,8 +44,6 @@ pub struct ForgejoConfig {
     pub url: String,
     #[serde(default)]
     pub repo: String,
-    #[serde(default)]
-    pub oauth: OAuth2Credentials,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -60,29 +56,6 @@ pub struct EmailConfig {
 }
 
 pub type SharedConfig = Arc<RwLock<Config>>;
-
-impl Config {
-    /// Return a clone with all secret fields blanked — safe to send to the browser.
-    /// Secrets: `oauth.client_secret` per provider (email has no secrets with Gmail API).
-    pub fn redacted(&self) -> Self {
-        let mut r = self.clone();
-        r.forgejo.oauth.client_secret.clear();
-        r.google.oauth.client_secret.clear();
-        r
-    }
-
-    /// Fill any empty secret fields in `self` from `existing`.
-    /// Call this on a PUT payload before saving, so the browser sending a blank
-    /// (redacted) value doesn't accidentally wipe a stored secret.
-    pub fn apply_secrets_from(&mut self, existing: &Config) {
-        if self.forgejo.oauth.client_secret.is_empty() {
-            self.forgejo.oauth.client_secret = existing.forgejo.oauth.client_secret.clone();
-        }
-        if self.google.oauth.client_secret.is_empty() {
-            self.google.oauth.client_secret = existing.google.oauth.client_secret.clone();
-        }
-    }
-}
 
 impl Default for Config {
     fn default() -> Self {
