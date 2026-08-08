@@ -5,6 +5,7 @@ export interface Chapter {
 
 export interface Book {
 	title: string;
+	subtitle: string | null;
 	chapters: Chapter[];
 	wordCount: number;
 	lastUpdated: string | null;

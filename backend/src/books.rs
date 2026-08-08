@@ -6,12 +6,23 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use git2::Repository;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Chapter {
     pub path: PathBuf,
     pub word_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PandocMetadata {
+    title: Option<String>,
+    subtitle: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PandocYaml {
+    metadata: Option<PandocMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -20,6 +31,8 @@ pub struct Book {
     pub folder_name: String,
     /// Display title read from `pandoc.yaml`; falls back to `folder_name`.
     pub title: String,
+    /// Optional subtitle read from `pandoc.yaml`.
+    pub subtitle: Option<String>,
     pub root: PathBuf,
     pub chapters: Vec<Chapter>,
     /// Time of the most recent commit that touched any file in this book's folder.
@@ -71,7 +84,12 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
-        let title = read_pandoc_title(&path).unwrap_or_else(|| folder_name.clone());
+        let pandoc = read_pandoc_yaml(&path);
+        let title = pandoc
+            .as_ref()
+            .and_then(|p| p.title.clone())
+            .unwrap_or_else(|| folder_name.clone());
+        let subtitle = pandoc.and_then(|p| p.subtitle);
         let last_updated = repo
             .as_ref()
             .ok()
@@ -82,6 +100,7 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
         books.push(Book {
             folder_name,
             title,
+            subtitle,
             root: path,
             chapters,
             last_updated,
@@ -96,29 +115,11 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
     books
 }
 
-/// Read the `metadata.title` value from a book's `pandoc.yaml`.
-fn read_pandoc_title(book_root: &Path) -> Option<String> {
+/// Parse `pandoc.yaml` and return the metadata fields.
+fn read_pandoc_yaml(book_root: &Path) -> Option<PandocMetadata> {
     let content = fs::read_to_string(book_root.join("pandoc.yaml")).ok()?;
-    let mut in_metadata = false;
-    for line in content.lines() {
-        if line.trim_end() == "metadata:" {
-            in_metadata = true;
-            continue;
-        }
-        if in_metadata {
-            if line.starts_with(' ') || line.starts_with('\t') {
-                if let Some(rest) = line.trim().strip_prefix("title:") {
-                    let val = rest.trim().trim_matches('"').trim_matches('\'').to_string();
-                    if !val.is_empty() {
-                        return Some(val);
-                    }
-                }
-            } else {
-                in_metadata = false;
-            }
-        }
-    }
-    None
+    let doc: PandocYaml = serde_yaml::from_str(&content).ok()?;
+    doc.metadata
 }
 
 /// Find the most recently modified `{title}*.epub` in `data_dir/dist/`.

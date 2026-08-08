@@ -131,80 +131,14 @@
           {@const deployedOk = isUpToDate(book.lastDeployed, book.lastUpdated)}
           <div class="card preset-filled-surface-100-900 p-6 space-y-4">
             <!-- Header -->
-            <div class="flex items-start justify-between gap-4">
-              <div>
-                <h2 class="h3">{book.title}</h2>
-                <p class="text-sm opacity-60">
-                  {book.wordCount.toLocaleString()} words
-                </p>
-              </div>
-              <div class="flex gap-2 shrink-0">
-                <button
-                  class="btn preset-tonal"
-                  onclick={() => buildBook(title)}
-                  disabled={building[title]}
-                >
-                  {building[title] ? "Building…" : "Build"}
-                </button>
-                <div class="relative">
-                  <button
-                    class="btn preset-tonal"
-                    onclick={() =>
-                      (deployMenuOpen[title] = !deployMenuOpen[title])}
-                    disabled={deploying[title]}
-                  >
-                    {deploying[title] ? "Deploying…" : "Deploy ▾"}
-                  </button>
-                  {#if deployMenuOpen[title]}
-                    <!-- transparent backdrop closes on outside click -->
-                    <div
-                      class="fixed inset-0 z-40"
-                      role="presentation"
-                      onclick={() => (deployMenuOpen[title] = false)}
-                    ></div>
-                    <div
-                      class="card preset-filled-surface-200-800 absolute right-0 mt-1 p-2 shadow-lg min-w-44 z-50 space-y-1"
-                    >
-                      <button
-                        class="btn preset-ghost w-full justify-start text-sm"
-                        onclick={() => {
-                          deployMenuOpen[title] = false;
-                          deployKindle(title);
-                        }}
-                      >
-                        📧 Kindle
-                      </button>
-                      <button
-                        class="btn preset-ghost w-full justify-start text-sm"
-                        onclick={() => {
-                          deployMenuOpen[title] = false;
-                          deployOpenWebUI(title);
-                        }}
-                      >
-                        🤖 Open WebUI
-                      </button>
-                      <button
-                        class="btn preset-ghost w-full justify-start text-sm"
-                        onclick={() => {
-                          deployMenuOpen[title] = false;
-                          downloadFile(title, "epub");
-                        }}
-                      >
-                        ⬇ Download EPUB
-                      </button>
-                      <button
-                        class="btn preset-ghost w-full justify-start text-sm"
-                        onclick={() => {
-                          deployMenuOpen[title] = false;
-                          downloadFile(title, "md");
-                        }}
-                      >
-                        ⬇ Download MD
-                      </button>
-                    </div>
-                  {/if}
-                </div>
-              </div>
+            <div>
+              <h2 class="h3">{book.title}</h2>
+              {#if book.subtitle}
+                <p class="text-sm opacity-70 italic">{book.subtitle}</p>
+              {/if}
+              <p class="text-sm opacity-60">
+                {book.wordCount.toLocaleString()} words
+              </p>
             </div>
 
             <!-- Timestamps -->
@@ -255,6 +189,75 @@
                 {/each}
               </ol>
             </details>
+
+            <!-- Footer actions -->
+            <div class="flex gap-2 pt-2 border-t border-surface-300-700">
+              <button
+                class="btn preset-tonal"
+                onclick={() => buildBook(title)}
+                disabled={building[title]}
+              >
+                {building[title] ? "Building…" : "Build"}
+              </button>
+              <div class="relative">
+                <button
+                  class="btn preset-tonal"
+                  onclick={() =>
+                    (deployMenuOpen[title] = !deployMenuOpen[title])}
+                  disabled={deploying[title]}
+                >
+                  {deploying[title] ? "Deploying…" : "Deploy ▾"}
+                </button>
+                {#if deployMenuOpen[title]}
+                  <!-- transparent backdrop closes on outside click -->
+                  <div
+                    class="fixed inset-0 z-40"
+                    role="presentation"
+                    onclick={() => (deployMenuOpen[title] = false)}
+                  ></div>
+                  <div
+                    class="card preset-filled-surface-200-800 absolute left-0 mt-1 p-2 shadow-lg min-w-44 z-50 space-y-1"
+                  >
+                    <button
+                      class="btn preset-ghost w-full justify-start text-sm"
+                      onclick={() => {
+                        deployMenuOpen[title] = false;
+                        deployKindle(title);
+                      }}
+                    >
+                      📧 Kindle
+                    </button>
+                    <button
+                      class="btn preset-ghost w-full justify-start text-sm"
+                      onclick={() => {
+                        deployMenuOpen[title] = false;
+                        deployOpenWebUI(title);
+                      }}
+                    >
+                      🤖 Open WebUI
+                    </button>
+                    <button
+                      class="btn preset-ghost w-full justify-start text-sm"
+                      onclick={() => {
+                        deployMenuOpen[title] = false;
+                        downloadFile(title, "epub");
+                      }}
+                    >
+                      ⬇ Download EPUB
+                    </button>
+                    <button
+                      class="btn preset-ghost w-full justify-start text-sm"
+                      onclick={() => {
+                        deployMenuOpen[title] = false;
+                        downloadFile(title, "md");
+                      }}
+                    >
+                      ⬇ Download MD
+                    </button>
+                  </div>
+                {/if}
+              </div>
+            </div>
           </div>
         {/each}
       </div>

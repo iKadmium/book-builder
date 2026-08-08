@@ -352,6 +352,7 @@ struct StatusResponse {
 #[derive(Serialize)]
 struct BookStatus {
     title: String,
+    subtitle: Option<String>,
     chapters: Vec<ChapterStatus>,
     #[serde(rename = "wordCount")]
     word_count: usize,
@@ -402,6 +403,7 @@ async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse>, S
                 book.folder_name.clone(),
                 BookStatus {
                     title: book.title.clone(),
+                    subtitle: book.subtitle.clone(),
                     chapters,
                     word_count,
                     last_updated: book
