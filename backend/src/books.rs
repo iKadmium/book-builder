@@ -33,6 +33,8 @@ pub struct Book {
     pub title: String,
     /// Optional subtitle read from `pandoc.yaml`.
     pub subtitle: Option<String>,
+    /// Raw contents of `Blurb.md`, if present.
+    pub blurb: Option<String>,
     pub root: PathBuf,
     pub chapters: Vec<Chapter>,
     /// Time of the most recent commit that touched any file in this book's folder.
@@ -90,6 +92,7 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
             .and_then(|p| p.title.clone())
             .unwrap_or_else(|| folder_name.clone());
         let subtitle = pandoc.and_then(|p| p.subtitle);
+        let blurb = fs::read_to_string(path.join("Blurb.md")).ok();
         let last_updated = repo
             .as_ref()
             .ok()
@@ -101,6 +104,7 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
             folder_name,
             title,
             subtitle,
+            blurb,
             root: path,
             chapters,
             last_updated,

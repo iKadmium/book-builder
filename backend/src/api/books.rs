@@ -353,6 +353,7 @@ struct StatusResponse {
 struct BookStatus {
     title: String,
     subtitle: Option<String>,
+    blurb: Option<String>,
     chapters: Vec<ChapterStatus>,
     #[serde(rename = "wordCount")]
     word_count: usize,
@@ -404,6 +405,7 @@ async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse>, S
                 BookStatus {
                     title: book.title.clone(),
                     subtitle: book.subtitle.clone(),
+                    blurb: book.blurb.clone(),
                     chapters,
                     word_count,
                     last_updated: book

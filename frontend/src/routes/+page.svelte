@@ -1,12 +1,18 @@
 <script lang="ts">
   import { AppBar } from "@skeletonlabs/skeleton-svelte";
   import { invalidateAll } from "$app/navigation";
+  import { marked } from "marked";
+  import DOMPurify from "dompurify";
   import type { PageData } from "./$types";
 
   let { data }: { data: PageData } = $props();
 
   let pulling = $state(false);
   let building = $state<Record<string, boolean>>({});
+
+  function renderBlurb(markdown: string): string {
+    return DOMPurify.sanitize(marked.parse(markdown, { async: false }));
+  }
 
   function fmt(iso: string | null): string {
     if (!iso) return "Never";
@@ -140,6 +146,17 @@
                 {book.wordCount.toLocaleString()} words
               </p>
             </div>
+
+            {#if book.blurb}
+              <details>
+                <summary class="cursor-pointer text-sm opacity-60 select-none">
+                  Blurb
+                </summary>
+                <div class="mt-2 text-sm space-y-2">
+                  {@html renderBlurb(book.blurb)}
+                </div>
+              </details>
+            {/if}
 
             <!-- Timestamps -->
             <div class="grid grid-cols-3 gap-2 text-sm">
