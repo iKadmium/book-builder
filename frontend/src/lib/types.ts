@@ -3,15 +3,19 @@ export interface Chapter {
 	wordCount: number;
 }
 
-export interface Book {
-	title: string;
-	subtitle: string | null;
-	blurb: string | null;
+export interface Version {
 	chapters: Chapter[];
 	wordCount: number;
 	lastUpdated: string | null;
 	lastBuilt: string | null;
 	lastDeployed: string | null;
+}
+
+export interface Book extends Version {
+	title: string;
+	subtitle: string | null;
+	blurb: string | null;
+	versions: Record<string, Version>;
 }
 
 export interface StatusData {

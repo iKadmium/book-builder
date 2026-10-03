@@ -3,14 +3,34 @@ use std::{collections::HashMap, sync::Arc};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{AppState, books, build, deploy, git};
+
+#[derive(Default, Deserialize)]
+struct VersionQuery {
+    version: Option<String>,
+}
+
+fn selected_version<'book>(
+    book: &'book books::Book,
+    query: &VersionQuery,
+) -> Result<&'book books::Version, (StatusCode, String)> {
+    let version = match query.version.as_deref() {
+        Some(name) => book.versions.iter().find(|version| version.name == name),
+        None => book
+            .versions
+            .iter()
+            .find(|version| version.name == "Chapters")
+            .or_else(|| book.versions.first()),
+    };
+    version.ok_or_else(|| (StatusCode::NOT_FOUND, "version not found".into()))
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -64,27 +84,12 @@ async fn pull(State(state): State<AppState>) -> Result<StatusCode, StatusCode> {
         // sync_repo clones on first run, pulls on subsequent runs.
         git::sync_repo(&repo_url, &token, &data_dir)?;
 
-        // Snapshot per-book state that survives a rescan.
-        struct Prev {
-            last_built: Option<chrono::DateTime<chrono::Utc>>,
-            last_deployed: Option<chrono::DateTime<chrono::Utc>>,
-            epub_path: Option<std::path::PathBuf>,
-        }
-        let prev: HashMap<String, Prev> = catalogue
+        let prev: HashMap<String, Vec<books::Version>> = catalogue
             .read()
             .map(|g| {
                 g.books
                     .iter()
-                    .map(|b| {
-                        (
-                            b.folder_name.clone(),
-                            Prev {
-                                last_built: b.last_built,
-                                last_deployed: b.last_deployed,
-                                epub_path: b.epub_path.clone(),
-                            },
-                        )
-                    })
+                    .map(|b| (b.folder_name.clone(), b.versions.clone()))
                     .collect()
             })
             .unwrap_or_default();
@@ -92,9 +97,12 @@ async fn pull(State(state): State<AppState>) -> Result<StatusCode, StatusCode> {
         let mut updated = books::scan(&data_dir);
         for book in &mut updated {
             if let Some(p) = prev.get(&book.folder_name) {
-                book.last_built = p.last_built;
-                book.last_deployed = p.last_deployed;
-                book.epub_path = p.epub_path.clone();
+                for version in &mut book.versions {
+                    if let Some(previous) = p.iter().find(|previous| previous.name == version.name)
+                    {
+                        version.last_deployed = previous.last_deployed;
+                    }
+                }
             }
         }
 
@@ -123,20 +131,25 @@ async fn pull(State(state): State<AppState>) -> Result<StatusCode, StatusCode> {
 async fn build_book(
     State(state): State<AppState>,
     Path(title): Path<String>,
+    Query(query): Query<VersionQuery>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let (book_root, folder_name) = state
-        .catalogue
-        .read()
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?
-        .books
-        .iter()
-        .find(|b| b.folder_name == title)
-        .map(|b| (b.root.clone(), b.folder_name.clone()))
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?;
+    let (book_root, book_title, version_name) = {
+        let catalogue = state
+            .catalogue
+            .read()
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?;
+        let book = catalogue
+            .books
+            .iter()
+            .find(|book| book.folder_name == title)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?;
+        let version = selected_version(book, &query)?;
+        (book.root.clone(), book.title.clone(), version.name.clone())
+    };
 
     let (epub_path, md_path) = tokio::try_join!(
-        build::build(&state.data_dir, &book_root, &folder_name),
-        build::build_markdown(&state.data_dir, &book_root, &folder_name),
+        build::build(&state.data_dir, &book_root, &book_title, &version_name),
+        build::build_markdown(&state.data_dir, &book_root, &book_title, &version_name),
     )
     .map_err(|e| {
         tracing::error!("build failed for '{title}': {e}");
@@ -145,10 +158,14 @@ async fn build_book(
 
     if let Ok(mut guard) = state.catalogue.write()
         && let Some(book) = guard.books.iter_mut().find(|b| b.folder_name == title)
+        && let Some(version) = book
+            .versions
+            .iter_mut()
+            .find(|version| version.name == version_name)
     {
-        book.last_built = Some(chrono::Utc::now());
-        book.epub_path = Some(epub_path);
-        book.md_path = Some(md_path);
+        version.last_built = Some(chrono::Utc::now());
+        version.epub_path = Some(epub_path);
+        version.md_path = Some(md_path);
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -159,8 +176,9 @@ async fn build_book(
 async fn deploy_kindle(
     State(state): State<AppState>,
     Path(title): Path<String>,
+    Query(query): Query<VersionQuery>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let (epub_path, from, to, token_endpoint, google_creds) = {
+    let (epub_path, version_name, output_title, from, to, token_endpoint, google_creds) = {
         let catalogue = state
             .catalogue
             .read()
@@ -170,10 +188,14 @@ async fn deploy_kindle(
             .iter()
             .find(|b| b.folder_name == title)
             .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?;
-        let epub_path = book.epub_path.clone().ok_or_else(|| {
+        let version = selected_version(book, &query)?;
+        let epub_path = version.epub_path.clone().ok_or_else(|| {
             (
                 StatusCode::CONFLICT,
-                format!("'{title}' has not been built yet"),
+                format!(
+                    "'{title}' version '{}' has not been built yet",
+                    version.name
+                ),
             )
         })?;
         let cfg = state
@@ -182,6 +204,8 @@ async fn deploy_kindle(
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?;
         (
             epub_path,
+            version.name.clone(),
+            books::version_title(&book.title, &version.name),
             cfg.email.from.clone(),
             cfg.email.to.clone(),
             "https://oauth2.googleapis.com/token".to_string(),
@@ -205,7 +229,7 @@ async fn deploy_kindle(
             )
         })?;
 
-    deploy::deploy_book(&from, &to, &token, &epub_path, &title)
+    deploy::deploy_book(&from, &to, &token, &epub_path, &output_title)
         .await
         .map_err(|e| {
             tracing::error!("deploy failed for '{title}': {e}");
@@ -214,8 +238,12 @@ async fn deploy_kindle(
 
     if let Ok(mut guard) = state.catalogue.write()
         && let Some(book) = guard.books.iter_mut().find(|b| b.folder_name == title)
+        && let Some(version) = book
+            .versions
+            .iter_mut()
+            .find(|version| version.name == version_name)
     {
-        book.last_deployed = Some(chrono::Utc::now());
+        version.last_deployed = Some(chrono::Utc::now());
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -231,29 +259,15 @@ struct OpenWebUIResponse {
 async fn deploy_openwebui(
     State(state): State<AppState>,
     Path(title): Path<String>,
+    Query(query): Query<VersionQuery>,
 ) -> Result<Json<OpenWebUIResponse>, (StatusCode, String)> {
-    let md_path = state
-        .catalogue
-        .read()
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?
-        .books
-        .iter()
-        .find(|b| b.folder_name == title)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?
-        .md_path
-        .clone()
-        .ok_or_else(|| {
-            (
-                StatusCode::CONFLICT,
-                format!("'{title}' has not been built yet"),
-            )
-        })?;
+    let (md_path, output_title) = selected_artifact(&state, &title, &query, false)?;
 
     let url = deploy::deploy_to_openwebui(
         &state.open_webui_endpoint,
         &state.open_webui_api_key,
         &md_path,
-        &title,
+        &output_title,
     )
     .await
     .map_err(|e| {
@@ -264,28 +278,47 @@ async fn deploy_openwebui(
     Ok(Json(OpenWebUIResponse { url }))
 }
 
+fn selected_artifact(
+    state: &AppState,
+    title: &str,
+    query: &VersionQuery,
+    epub: bool,
+) -> Result<(std::path::PathBuf, String), (StatusCode, String)> {
+    let catalogue = state
+        .catalogue
+        .read()
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?;
+    let book = catalogue
+        .books
+        .iter()
+        .find(|b| b.folder_name == title)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?;
+    let version = selected_version(book, query)?;
+    let path = if epub {
+        &version.epub_path
+    } else {
+        &version.md_path
+    };
+    let path = path.clone().ok_or_else(|| {
+        (
+            StatusCode::CONFLICT,
+            format!(
+                "'{title}' version '{}' has not been built yet",
+                version.name
+            ),
+        )
+    })?;
+    Ok((path, books::version_title(&book.title, &version.name)))
+}
+
 // ── downloads ────────────────────────────────────────────────────────────────
 
 async fn download_epub(
     State(state): State<AppState>,
     Path(title): Path<String>,
+    Query(query): Query<VersionQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let epub_path = state
-        .catalogue
-        .read()
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?
-        .books
-        .iter()
-        .find(|b| b.folder_name == title)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?
-        .epub_path
-        .clone()
-        .ok_or_else(|| {
-            (
-                StatusCode::CONFLICT,
-                format!("'{title}' has not been built yet"),
-            )
-        })?;
+    let (epub_path, _) = selected_artifact(&state, &title, &query, true)?;
 
     serve_file(epub_path, "application/epub+zip").await
 }
@@ -293,23 +326,9 @@ async fn download_epub(
 async fn download_md(
     State(state): State<AppState>,
     Path(title): Path<String>,
+    Query(query): Query<VersionQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let md_path = state
-        .catalogue
-        .read()
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?
-        .books
-        .iter()
-        .find(|b| b.folder_name == title)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?
-        .md_path
-        .clone()
-        .ok_or_else(|| {
-            (
-                StatusCode::CONFLICT,
-                format!("'{title}' has not been built yet"),
-            )
-        })?;
+    let (md_path, _) = selected_artifact(&state, &title, &query, false)?;
 
     serve_file(md_path, "text/markdown").await
 }
@@ -354,6 +373,13 @@ struct BookStatus {
     title: String,
     subtitle: Option<String>,
     blurb: Option<String>,
+    versions: HashMap<String, VersionStatus>,
+    #[serde(flatten)]
+    default_version: VersionStatus,
+}
+
+#[derive(Serialize)]
+struct VersionStatus {
     chapters: Vec<ChapterStatus>,
     #[serde(rename = "wordCount")]
     word_count: usize,
@@ -372,6 +398,46 @@ struct ChapterStatus {
     word_count: usize,
 }
 
+fn version_status(version: Option<&books::Version>) -> VersionStatus {
+    VersionStatus {
+        chapters: version
+            .map(|version| {
+                version
+                    .chapters
+                    .iter()
+                    .map(|chapter| ChapterStatus {
+                        path: chapter
+                            .path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        word_count: chapter.word_count,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        word_count: version
+            .map(|version| {
+                version
+                    .chapters
+                    .iter()
+                    .map(|chapter| chapter.word_count)
+                    .sum()
+            })
+            .unwrap_or(0),
+        last_updated: version
+            .and_then(|version| version.last_updated)
+            .map(|date| date.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        last_built: version
+            .and_then(|version| version.last_built)
+            .map(|date| date.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        last_deployed: version
+            .and_then(|version| version.last_deployed)
+            .map(|date| date.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+    }
+}
+
 async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse>, StatusCode> {
     let catalogue = state.catalogue.read().map_err(|_| {
         tracing::error!("catalogue lock poisoned");
@@ -386,41 +452,102 @@ async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse>, S
         .books
         .iter()
         .map(|book| {
-            let word_count = book.chapters.iter().map(|c| c.word_count).sum();
-            let chapters = book
-                .chapters
-                .iter()
-                .map(|c| ChapterStatus {
-                    path: c
-                        .path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    word_count: c.word_count,
-                })
-                .collect();
+            let mut default_version =
+                version_status(selected_version(book, &VersionQuery::default()).ok());
+            default_version.last_updated = book
+                .last_updated
+                .map(|date| date.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
             (
                 book.folder_name.clone(),
                 BookStatus {
                     title: book.title.clone(),
                     subtitle: book.subtitle.clone(),
                     blurb: book.blurb.clone(),
-                    chapters,
-                    word_count,
-                    last_updated: book
-                        .last_updated
-                        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-                    last_built: book
-                        .last_built
-                        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-                    last_deployed: book
-                        .last_deployed
-                        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                    versions: book
+                        .versions
+                        .iter()
+                        .map(|version| (version.name.clone(), version_status(Some(version))))
+                        .collect(),
+                    default_version,
                 },
             )
         })
         .collect();
 
     Ok(Json(StatusResponse { last_pull, books }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_defaults_to_chapters_and_never_falls_back_for_unknown_versions() {
+        let version = |name: &str, epub_path| books::Version {
+            name: name.into(),
+            chapters: Vec::new(),
+            last_updated: None,
+            last_built: None,
+            last_deployed: None,
+            epub_path,
+            md_path: None,
+        };
+        let mut book = books::Book {
+            folder_name: "Folder Name".into(),
+            title: "Display Title".into(),
+            subtitle: None,
+            blurb: None,
+            root: "book".into(),
+            versions: vec![
+                version("Draft v1", Some("draft.epub".into())),
+                version("Chapters", None),
+            ],
+            last_updated: None,
+        };
+        assert_eq!(
+            selected_version(&book, &VersionQuery::default())
+                .unwrap()
+                .name,
+            "Chapters"
+        );
+        let query = VersionQuery {
+            version: Some("Draft v1".into()),
+        };
+        assert_eq!(
+            selected_version(&book, &query)
+                .unwrap()
+                .epub_path
+                .as_deref(),
+            Some(std::path::Path::new("draft.epub"))
+        );
+        let status = serde_json::to_value(version_status(Some(&book.versions[0]))).unwrap();
+        assert!(status.get("lastUpdated").is_some());
+        assert!(status.get("lastBuilt").is_some());
+        assert!(status.get("lastDeployed").is_some());
+        let query = VersionQuery {
+            version: Some("Chapters".into()),
+        };
+        assert!(selected_version(&book, &query).unwrap().epub_path.is_none());
+        let query = VersionQuery {
+            version: Some("../Draft v1".into()),
+        };
+        assert_eq!(
+            selected_version(&book, &query).unwrap_err().0,
+            StatusCode::NOT_FOUND
+        );
+        book.versions.pop();
+        assert_eq!(
+            selected_version(&book, &VersionQuery::default())
+                .unwrap()
+                .name,
+            "Draft v1"
+        );
+        book.versions.clear();
+        assert_eq!(
+            selected_version(&book, &VersionQuery::default())
+                .unwrap_err()
+                .0,
+            StatusCode::NOT_FOUND
+        );
+    }
 }

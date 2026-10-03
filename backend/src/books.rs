@@ -14,6 +14,23 @@ pub struct Chapter {
     pub word_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct Version {
+    pub name: String,
+    pub chapters: Vec<Chapter>,
+    pub last_updated: Option<DateTime<Utc>>,
+    pub last_built: Option<DateTime<Utc>>,
+    pub last_deployed: Option<DateTime<Utc>>,
+    #[serde(skip)]
+    pub epub_path: Option<PathBuf>,
+    #[serde(skip)]
+    pub md_path: Option<PathBuf>,
+}
+
+pub fn version_title(title: &str, version: &str) -> String {
+    format!("{title} ({version})")
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct PandocMetadata {
     title: Option<String>,
@@ -36,19 +53,9 @@ pub struct Book {
     /// Raw contents of `Blurb.md`, if present.
     pub blurb: Option<String>,
     pub root: PathBuf,
-    pub chapters: Vec<Chapter>,
+    pub versions: Vec<Version>,
     /// Time of the most recent commit that touched any file in this book's folder.
     pub last_updated: Option<DateTime<Utc>>,
-    /// Time of the last successful build (epub + markdown).
-    pub last_built: Option<DateTime<Utc>>,
-    /// Time the EPUB was last successfully deployed.
-    pub last_deployed: Option<DateTime<Utc>>,
-    /// Path to the most recently built EPUB (not serialised to JSON).
-    #[serde(skip)]
-    pub epub_path: Option<PathBuf>,
-    /// Path to the most recently built markdown file (not serialised to JSON).
-    #[serde(skip)]
-    pub md_path: Option<PathBuf>,
 }
 
 /// The full catalogue: the books plus when they were last refreshed from the repo.
@@ -62,8 +69,8 @@ pub struct Catalogue {
 pub type SharedCatalogue = Arc<RwLock<Catalogue>>;
 
 /// Scan `data_dir` for books.  A book is any immediate subdirectory that
-/// contains a `pandoc.yaml` file.  Chapters are `*.md` files inside a
-/// `Chapters/` subdirectory of the book root.
+/// contains a `pandoc.yaml` file. Versions are immediate subdirectories
+/// containing Markdown files.
 pub fn scan(data_dir: &Path) -> Vec<Book> {
     let mut books = Vec::new();
     let repo = Repository::open(data_dir);
@@ -97,21 +104,54 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
             .as_ref()
             .ok()
             .and_then(|r| last_updated_in_repo(r, &folder_name));
-        let chapters = scan_chapters(&path);
-        let (epub_path, last_built) = latest_epub(data_dir, &folder_name);
-        let md_path = latest_md(data_dir, &folder_name);
+        let shared_last_updated = repo.as_ref().ok().and_then(|repo| {
+            ["pandoc.yaml", "Authors Note.md"]
+                .iter()
+                .filter_map(|name| last_updated_in_repo(repo, &format!("{folder_name}/{name}")))
+                .max()
+        });
+        let mut versions = Vec::new();
+        if let Ok(entries) = fs::read_dir(&path) {
+            for entry in entries.flatten() {
+                let version_path = entry.path();
+                if !version_path.is_dir() {
+                    continue;
+                }
+                let chapters = scan_chapters(&version_path);
+                if chapters.is_empty() {
+                    continue;
+                }
+                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                let output_title = version_title(&title, &name);
+                let (epub_path, last_built) = latest_epub(data_dir, &output_title);
+                let md_path = latest_md(data_dir, &output_title);
+                let last_updated = repo
+                    .as_ref()
+                    .ok()
+                    .and_then(|repo| last_updated_in_repo(repo, &format!("{folder_name}/{name}")))
+                    .max(shared_last_updated);
+                versions.push(Version {
+                    name,
+                    chapters,
+                    last_updated,
+                    last_built,
+                    last_deployed: None,
+                    epub_path,
+                    md_path,
+                });
+            }
+        }
+        versions.sort_by(|left, right| left.name.cmp(&right.name));
         books.push(Book {
             folder_name,
             title,
             subtitle,
             blurb,
             root: path,
-            chapters,
+            versions,
             last_updated,
-            last_built,
-            last_deployed: None,
-            epub_path,
-            md_path,
         });
     }
 
@@ -145,7 +185,7 @@ fn latest_epub(data_dir: &Path, title: &str) -> (Option<PathBuf>, Option<DateTim
             Some(n) => n.to_string(),
             None => continue,
         };
-        if !name.starts_with(&prefix) || !name.ends_with(".epub") {
+        if !matches_artifact(&name, &prefix, ".epub") {
             continue;
         }
         let modified = fs::metadata(&path)
@@ -178,7 +218,7 @@ fn latest_md(data_dir: &Path, title: &str) -> Option<PathBuf> {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str())?.to_string();
-        if !name.starts_with(&prefix) || !name.ends_with(".md") {
+        if !matches_artifact(&name, &prefix, ".md") {
             continue;
         }
         let modified = fs::metadata(&path).and_then(|m| m.modified()).ok()?;
@@ -187,6 +227,13 @@ fn latest_md(data_dir: &Path, title: &str) -> Option<PathBuf> {
         }
     }
     best.map(|(p, _)| p)
+}
+
+fn matches_artifact(name: &str, title: &str, extension: &str) -> bool {
+    name.strip_prefix(title)
+        .and_then(|suffix| suffix.strip_prefix(' '))
+        .and_then(|suffix| suffix.strip_suffix(extension))
+        .is_some_and(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok())
 }
 
 /// Returns the timestamp of the most recent commit that touched any file
@@ -239,14 +286,14 @@ fn last_updated_in_repo(repo: &Repository, subdir: &str) -> Option<DateTime<Utc>
 fn scan_chapters(book_dir: &Path) -> Vec<Chapter> {
     let mut chapters = Vec::new();
 
-    let entries = match fs::read_dir(book_dir.join("Chapters")) {
+    let entries = match fs::read_dir(book_dir) {
         Ok(e) => e,
         Err(_) => return chapters,
     };
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
         let word_count = fs::read_to_string(&path)
@@ -257,4 +304,59 @@ fn scan_chapters(book_dir: &Path) -> Vec<Chapter> {
 
     chapters.sort_by(|a, b| a.path.cmp(&b.path));
     chapters
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovers_versions_and_isolates_artifacts() {
+        let data_dir =
+            std::env::temp_dir().join(format!("book-versions-{}", rand::random::<u64>()));
+        let root = data_dir.join("Folder Name");
+        for name in ["Chapters", "Draft v1", "Draft v2", "Empty"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        fs::write(
+            root.join("pandoc.yaml"),
+            "metadata:\n  title: Display Title\n",
+        )
+        .unwrap();
+        fs::write(root.join("Chapters/01.md"), "current chapter").unwrap();
+        fs::write(root.join("Draft v1/02.md"), "second").unwrap();
+        fs::write(root.join("Draft v1/01.md"), "first draft chapter").unwrap();
+        fs::write(root.join("Draft v2/01.md"), "another draft").unwrap();
+        fs::create_dir_all(data_dir.join("dist")).unwrap();
+        let epub = data_dir.join("dist/Display Title (Draft v1) 2026-10-03.epub");
+        fs::write(&epub, "epub").unwrap();
+        fs::write(
+            data_dir.join("dist/Display Title (Draft v1) 2026-10-03.md"),
+            "markdown",
+        )
+        .unwrap();
+
+        let books = scan(&data_dir);
+        assert_eq!(books.len(), 1);
+        let versions = &books[0].versions;
+        assert_eq!(
+            versions
+                .iter()
+                .map(|version| version.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Chapters", "Draft v1", "Draft v2"]
+        );
+        assert_eq!(versions[1].chapters.len(), 2);
+        assert_eq!(versions[1].chapters[0].word_count, 3);
+        assert_eq!(versions[1].epub_path.as_ref(), Some(&epub));
+        assert!(versions[1].md_path.is_some());
+        assert!(versions[0].epub_path.is_none());
+        assert!(versions[2].epub_path.is_none());
+        assert!(!matches_artifact(
+            "Display Title (Draft v1 extra) 2026-10-03.epub",
+            "Display Title (Draft v1)",
+            ".epub"
+        ));
+        fs::remove_dir_all(data_dir).unwrap();
+    }
 }
