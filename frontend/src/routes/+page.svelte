@@ -175,7 +175,7 @@
             <label class="flex items-center gap-3 text-sm">
               <span>Version</span>
               <select
-                class="select min-w-0 flex-1"
+                class="select min-w-0 flex-1 pl-2"
                 aria-label={`Version for ${book.title}`}
                 value={name}
                 disabled={!version || building[title] || deploying[title]}
