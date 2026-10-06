@@ -1,6 +1,6 @@
 //! Covers are compiled from `data/Covers/cover.typ` using the Typst CLI.
-//! The template reads the book's metadata via `yaml("book.yaml")`, which is
-//! redirected to the book folder's `pandoc.yaml`.
+//! Book files are passed as root-absolute paths via `sys.inputs`: `metadata`
+//! (the book's `pandoc.yaml`) and, when present, `object` / `object-front`.
 
 use std::{fs, path::Path, process::Command};
 
@@ -33,15 +33,6 @@ pub fn generate_png(data_dir: &Path, book_root: &Path, out: &Path) -> Result<()>
     compile_typst(data_dir, book_root, out, Some("72"))
 }
 
-/// Removes the staged template copy once compilation finishes.
-struct StagedTemplate(std::path::PathBuf);
-
-impl Drop for StagedTemplate {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
-
 fn compile_typst(data_dir: &Path, book_root: &Path, out: &Path, ppi: Option<&str>) -> Result<()> {
     let data_dir = fs::canonicalize(data_dir)?;
     let book_root = fs::canonicalize(book_root)?;
@@ -50,23 +41,6 @@ fn compile_typst(data_dir: &Path, book_root: &Path, out: &Path, ppi: Option<&str
     let covers_dir = data_dir.join("Covers");
     let metadata_path = Path::new("/").join(relative_book_root).join("pandoc.yaml");
     let metadata = relative_path(&metadata_path);
-
-    // Typst resolves relative paths against the template's own directory, so
-    // `book.yaml` would be looked up in Covers. Stage a copy alongside the
-    // template that points at the book's pandoc.yaml instead, keeping other
-    // Covers-relative assets resolvable.
-    let source = fs::read_to_string(&cover_typ)?;
-    let rewritten = source.replace("\"book.yaml\"", &format!("{metadata:?}"));
-    let staged = (rewritten != source)
-        .then(|| -> Result<StagedTemplate> {
-            let path = covers_dir.join(format!(".cover-{}.typ", rand::random::<u64>()));
-            fs::write(&path, &rewritten)?;
-            Ok(StagedTemplate(path))
-        })
-        .transpose()?;
-    let template = staged
-        .as_ref()
-        .map_or(cover_typ.as_path(), |staged| &staged.0);
 
     let mut command = Command::new("typst");
     command
@@ -94,7 +68,7 @@ fn compile_typst(data_dir: &Path, book_root: &Path, out: &Path, ppi: Option<&str
     }
 
     let output = command
-        .arg(template)
+        .arg(&cover_typ)
         .arg(out)
         .output()
         .map_err(|error| format!("failed to spawn Typst: {error}"))?;
@@ -131,30 +105,6 @@ mod tests {
         assert_eq!(image.dimensions(), (1600, 2560));
         assert!(image.pixels().any(|pixel| pixel != image.get_pixel(0, 0)));
         fs::remove_dir_all(output_dir).unwrap();
-    }
-
-    #[test]
-    fn reads_book_yaml_from_book_folder_pandoc_yaml() {
-        let data_dir = std::env::temp_dir().join(format!("book-yaml-{}", rand::random::<u64>()));
-        let root = data_dir.join("Books/Test Book");
-        fs::create_dir_all(&root).unwrap();
-        fs::create_dir_all(data_dir.join("Covers")).unwrap();
-        fs::write(root.join("pandoc.yaml"), "metadata:\n  title: Test\n").unwrap();
-        fs::write(
-            data_dir.join("Covers/cover.typ"),
-            "#let meta = yaml(\"book.yaml\").metadata\n#set page(width: 32pt, height: 48pt)\n#text(size: 8pt, meta.title)\n",
-        )
-        .unwrap();
-
-        let svg = data_dir.join("cover.svg");
-        generate_svg(&data_dir, &root, &svg).unwrap();
-        assert!(fs::read_to_string(&svg).unwrap().contains("<svg"));
-        let leftovers: Vec<_> = fs::read_dir(data_dir.join("Covers"))
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(leftovers, ["cover.typ"]);
-        fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]
