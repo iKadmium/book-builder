@@ -1,32 +1,14 @@
 <script lang="ts">
   import { AppBar } from "@skeletonlabs/skeleton-svelte";
   import { invalidateAll } from "$app/navigation";
-  import { marked } from "marked";
-  import DOMPurify from "dompurify";
+  import { ensureOk, errorMessage } from "$lib/errors";
+  import BookCard from "$lib/components/BookCard.svelte";
   import type { PageData } from "./$types";
 
   let { data }: { data: PageData } = $props();
 
   let pulling = $state(false);
-  let building = $state<Record<string, boolean>>({});
-  let selectedVersions = $state<Record<string, string>>({});
-
-  function versionName(title: string): string {
-    const versions = data.books[title].versions;
-    const selected = selectedVersions[title];
-    if (selected && versions[selected]) return selected;
-    return versions.Chapters
-      ? "Chapters"
-      : (Object.keys(versions).sort()[0] ?? "");
-  }
-
-  function versionQuery(version: string): string {
-    return `?${new URLSearchParams({ version })}`;
-  }
-
-  function renderBlurb(markdown: string): string {
-    return DOMPurify.sanitize(marked.parse(markdown, { async: false }));
-  }
+  let pullError = $state("");
 
   function fmt(iso: string | null): string {
     if (!iso) return "Never";
@@ -36,92 +18,18 @@
     }).format(new Date(iso));
   }
 
-  function isUpToDate(
-    stamp: string | null,
-    lastUpdated: string | null,
-  ): boolean {
-    if (!stamp) return false;
-    if (!lastUpdated) return true;
-    return new Date(stamp) >= new Date(lastUpdated);
-  }
-
   async function pull() {
     pulling = true;
+    pullError = "";
     try {
-      await fetch("/api/pull", { method: "POST" });
+      await ensureOk(await fetch("/api/pull", { method: "POST" }));
       await invalidateAll();
+    } catch (error) {
+      pullError = `Pull failed: ${errorMessage(error)}`;
     } finally {
       pulling = false;
     }
   }
-
-  async function buildBook(title: string, version: string) {
-    building[title] = true;
-    try {
-      const res = await fetch(
-        `/api/build/${encodeURIComponent(title)}${versionQuery(version)}`,
-        {
-          method: "POST",
-        },
-      );
-      if (!res.ok) {
-        const text = await res.text();
-        alert(`Build failed: ${text}`);
-      } else {
-        await invalidateAll();
-      }
-    } finally {
-      building[title] = false;
-    }
-  }
-
-  let deploying = $state<Record<string, boolean>>({});
-
-  async function deployKindle(title: string, version: string) {
-    deploying[title] = true;
-    try {
-      const res = await fetch(
-        `/api/deploy/kindle/${encodeURIComponent(title)}${versionQuery(version)}`,
-        { method: "POST" },
-      );
-      if (!res.ok) {
-        alert(`Kindle deploy failed: ${await res.text()}`);
-      } else {
-        await invalidateAll();
-      }
-    } finally {
-      deploying[title] = false;
-    }
-  }
-
-  async function deployOpenWebUI(title: string, version: string) {
-    deploying[title] = true;
-    try {
-      const res = await fetch(
-        `/api/deploy/openwebui/${encodeURIComponent(title)}${versionQuery(version)}`,
-        { method: "POST" },
-      );
-      if (!res.ok) {
-        alert(`Open WebUI deploy failed: ${await res.text()}`);
-      } else {
-        const { url } = await res.json();
-        window.open(url, "_blank", "noopener");
-      }
-    } finally {
-      deploying[title] = false;
-    }
-  }
-
-  function downloadFile(title: string, version: string, format: "epub" | "md") {
-    const a = document.createElement("a");
-    a.href = `/api/download/${encodeURIComponent(title)}/${format}${versionQuery(version)}`;
-    a.download = "";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  }
-
-  let deployMenuOpen = $state<Record<string, boolean>>({});
 </script>
 
 <div class="flex flex-col min-h-screen">
@@ -145,186 +53,32 @@
   </AppBar>
 
   <main class="container mx-auto p-8">
+    {#if data.loadError}
+      <div
+        role="alert"
+        class="mb-4 border-l-4 border-error-500 p-3 text-error-500 whitespace-pre-wrap break-words"
+      >
+        {data.loadError}
+      </div>
+    {/if}
+    {#if pullError}
+      <div
+        role="alert"
+        class="mb-4 border-l-4 border-error-500 p-3 text-error-500 whitespace-pre-wrap break-words"
+      >
+        {pullError}
+      </div>
+    {/if}
     {#if Object.keys(data.books).length === 0}
-      <p class="opacity-60">No books found. Try pulling the latest changes.</p>
+      {#if !data.loadError}
+        <p class="opacity-60">
+          No books found. Try pulling the latest changes.
+        </p>
+      {/if}
     {:else}
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {#each Object.entries(data.books).sort( ([a], [b]) => a.localeCompare(b), ) as [title, book]}
-          {@const name = versionName(title)}
-          {@const version = book.versions[name]}
-          {@const builtOk = isUpToDate(
-            version?.lastBuilt ?? null,
-            version?.lastUpdated ?? null,
-          )}
-          {@const deployedOk = isUpToDate(
-            version?.lastDeployed ?? null,
-            version?.lastUpdated ?? null,
-          )}
-          <div class="card preset-filled-surface-100-900 p-6 space-y-4">
-            <!-- Header -->
-            <div>
-              <h2 class="h3">{book.title}</h2>
-              {#if book.subtitle}
-                <p class="text-sm opacity-70 italic">{book.subtitle}</p>
-              {/if}
-              <p class="text-sm opacity-60">
-                {(version?.wordCount ?? 0).toLocaleString()} words
-              </p>
-            </div>
-
-            <label class="flex items-center gap-3 text-sm">
-              <span>Version</span>
-              <select
-                class="select min-w-0 flex-1 pl-2"
-                aria-label={`Version for ${book.title}`}
-                value={name}
-                disabled={!version || building[title] || deploying[title]}
-                onchange={(event) => {
-                  selectedVersions[title] = event.currentTarget.value;
-                  deployMenuOpen[title] = false;
-                }}
-              >
-                {#if !version}
-                  <option value="">No versions</option>
-                {/if}
-                {#each Object.keys(book.versions).sort() as versionName}
-                  <option value={versionName}>{versionName}</option>
-                {/each}
-              </select>
-            </label>
-
-            {#if book.blurb}
-              <details>
-                <summary class="cursor-pointer text-sm opacity-60 select-none">
-                  Blurb
-                </summary>
-                <div class="mt-2 text-sm space-y-2">
-                  {@html renderBlurb(book.blurb)}
-                </div>
-              </details>
-            {/if}
-
-            <!-- Timestamps -->
-            <div class="grid grid-cols-3 gap-2 text-sm">
-              <div>
-                <p class="opacity-50 text-xs uppercase tracking-wide">
-                  Updated
-                </p>
-                <p>{fmt(version?.lastUpdated ?? null)}</p>
-              </div>
-              <div>
-                <p class="opacity-50 text-xs uppercase tracking-wide">Built</p>
-                <p
-                  class:text-success-500={builtOk}
-                  class:text-warning-500={!builtOk}
-                >
-                  {fmt(version?.lastBuilt ?? null)}
-                </p>
-              </div>
-              <div>
-                <p class="opacity-50 text-xs uppercase tracking-wide">
-                  Deployed
-                </p>
-                <p
-                  class:text-success-500={deployedOk}
-                  class:text-warning-500={!deployedOk}
-                >
-                  {fmt(version?.lastDeployed ?? null)}
-                </p>
-              </div>
-            </div>
-
-            <!-- Chapter list -->
-            <details>
-              <summary class="cursor-pointer text-sm opacity-60 select-none">
-                {version?.chapters.length ?? 0} chapter{version?.chapters
-                  .length !== 1
-                  ? "s"
-                  : ""}
-              </summary>
-              <ol class="mt-2 space-y-1">
-                {#each version?.chapters ?? [] as chapter}
-                  <li class="flex justify-between text-sm">
-                    <span class="opacity-80">{chapter.path}</span>
-                    <span class="opacity-50 tabular-nums"
-                      >{chapter.wordCount.toLocaleString()} w</span
-                    >
-                  </li>
-                {/each}
-              </ol>
-            </details>
-
-            <!-- Footer actions -->
-            <div class="flex gap-2 pt-2 border-t border-surface-300-700">
-              <button
-                class="btn preset-tonal"
-                onclick={() => buildBook(title, name)}
-                disabled={!version || building[title] || deploying[title]}
-              >
-                {building[title] ? "Building…" : "Build"}
-              </button>
-              <div class="relative">
-                <button
-                  class="btn preset-tonal"
-                  onclick={() =>
-                    (deployMenuOpen[title] = !deployMenuOpen[title])}
-                  disabled={!version?.lastBuilt ||
-                    building[title] ||
-                    deploying[title]}
-                >
-                  {deploying[title] ? "Deploying…" : "Deploy ▾"}
-                </button>
-                {#if deployMenuOpen[title]}
-                  <!-- transparent backdrop closes on outside click -->
-                  <div
-                    class="fixed inset-0 z-40"
-                    role="presentation"
-                    onclick={() => (deployMenuOpen[title] = false)}
-                  ></div>
-                  <div
-                    class="card preset-filled-surface-200-800 absolute left-0 mt-1 p-2 shadow-lg min-w-44 z-50 space-y-1"
-                  >
-                    <button
-                      class="btn preset-ghost w-full justify-start text-sm"
-                      onclick={() => {
-                        deployMenuOpen[title] = false;
-                        deployKindle(title, name);
-                      }}
-                    >
-                      📧 Kindle
-                    </button>
-                    <button
-                      class="btn preset-ghost w-full justify-start text-sm"
-                      onclick={() => {
-                        deployMenuOpen[title] = false;
-                        deployOpenWebUI(title, name);
-                      }}
-                    >
-                      🤖 Open WebUI
-                    </button>
-                    <button
-                      class="btn preset-ghost w-full justify-start text-sm"
-                      onclick={() => {
-                        deployMenuOpen[title] = false;
-                        downloadFile(title, name, "epub");
-                      }}
-                    >
-                      ⬇ Download EPUB
-                    </button>
-                    <button
-                      class="btn preset-ghost w-full justify-start text-sm"
-                      onclick={() => {
-                        deployMenuOpen[title] = false;
-                        downloadFile(title, name, "md");
-                      }}
-                    >
-                      ⬇ Download MD
-                    </button>
-                  </div>
-                {/if}
-              </div>
-            </div>
-          </div>
+        {#each Object.entries(data.books).sort( ([a], [b]) => a.localeCompare(b), ) as [folderName, book] (folderName)}
+          <BookCard {folderName} {book} />
         {/each}
       </div>
     {/if}

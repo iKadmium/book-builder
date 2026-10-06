@@ -68,17 +68,22 @@ pub struct Catalogue {
 /// Shared, mutable catalogue threaded through the app.
 pub type SharedCatalogue = Arc<RwLock<Catalogue>>;
 
-/// Scan `data_dir` for books.  A book is any immediate subdirectory that
+/// Scan `data_dir/Books` for books. A book is any immediate subdirectory that
 /// contains a `pandoc.yaml` file. Versions are immediate subdirectories
 /// containing Markdown files.
 pub fn scan(data_dir: &Path) -> Vec<Book> {
     let mut books = Vec::new();
     let repo = Repository::open(data_dir);
+    let books_dir = data_dir.join("Books");
+    let cover_last_updated = repo
+        .as_ref()
+        .ok()
+        .and_then(|repo| last_updated_in_repo(repo, "Covers"));
 
-    let entries = match fs::read_dir(data_dir) {
+    let entries = match fs::read_dir(&books_dir) {
         Ok(e) => e,
         Err(e) => {
-            tracing::warn!("Failed to read data dir {}: {e}", data_dir.display());
+            tracing::warn!("Failed to read books dir {}: {e}", books_dir.display());
             return books;
         }
     };
@@ -100,16 +105,26 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
             .unwrap_or_else(|| folder_name.clone());
         let subtitle = pandoc.and_then(|p| p.subtitle);
         let blurb = fs::read_to_string(path.join("Blurb.md")).ok();
+        let repo_path = format!("Books/{folder_name}");
         let last_updated = repo
             .as_ref()
             .ok()
-            .and_then(|r| last_updated_in_repo(r, &folder_name));
-        let shared_last_updated = repo.as_ref().ok().and_then(|repo| {
-            ["pandoc.yaml", "Authors Note.md"]
+            .and_then(|r| last_updated_in_repo(r, &repo_path));
+        let shared_last_updated = repo
+            .as_ref()
+            .ok()
+            .and_then(|repo| {
+                [
+                    "pandoc.yaml",
+                    "Authors Note.md",
+                    "object.svg",
+                    "object-front.svg",
+                ]
                 .iter()
-                .filter_map(|name| last_updated_in_repo(repo, &format!("{folder_name}/{name}")))
+                .filter_map(|name| last_updated_in_repo(repo, &format!("{repo_path}/{name}")))
                 .max()
-        });
+            })
+            .max(cover_last_updated);
         let mut versions = Vec::new();
         if let Ok(entries) = fs::read_dir(&path) {
             for entry in entries.flatten() {
@@ -130,7 +145,7 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
                 let last_updated = repo
                     .as_ref()
                     .ok()
-                    .and_then(|repo| last_updated_in_repo(repo, &format!("{folder_name}/{name}")))
+                    .and_then(|repo| last_updated_in_repo(repo, &format!("{repo_path}/{name}")))
                     .max(shared_last_updated);
                 versions.push(Version {
                     name,
@@ -311,10 +326,87 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tracks_nested_versions_and_shared_cover_changes() {
+        let data_dir = std::env::temp_dir().join(format!("book-history-{}", rand::random::<u64>()));
+        let root = data_dir.join("Books/Test Book");
+        fs::create_dir_all(root.join("Draft")).unwrap();
+        fs::create_dir_all(root.join("Final")).unwrap();
+        fs::create_dir_all(data_dir.join("Covers")).unwrap();
+        fs::write(root.join("pandoc.yaml"), "metadata:\n  title: Test Book\n").unwrap();
+        fs::write(root.join("Draft/01.md"), "draft").unwrap();
+        fs::write(root.join("Final/01.md"), "final").unwrap();
+        fs::write(data_dir.join("Covers/cover.svg.j2"), "initial template").unwrap();
+        let repo = Repository::init(&data_dir).unwrap();
+        let commit = |seconds| {
+            let mut index = repo.index().unwrap();
+            index
+                .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let signature =
+                git2::Signature::new("Test", "test@example.com", &git2::Time::new(seconds, 0))
+                    .unwrap();
+            let parent = repo.head().ok().map(|head| head.peel_to_commit().unwrap());
+            let parents: Vec<_> = parent.iter().collect();
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "update",
+                &tree,
+                &parents,
+            )
+            .unwrap();
+        };
+        commit(1_700_000_000);
+        fs::write(root.join("Draft/01.md"), "updated draft").unwrap();
+        commit(1_700_000_100);
+        let books = scan(&data_dir);
+        assert_eq!(
+            books[0].last_updated,
+            DateTime::from_timestamp(1_700_000_100, 0)
+        );
+        assert_eq!(
+            books[0].versions[0].last_updated,
+            DateTime::from_timestamp(1_700_000_100, 0)
+        );
+        assert_eq!(
+            books[0].versions[1].last_updated,
+            DateTime::from_timestamp(1_700_000_000, 0)
+        );
+        fs::write(data_dir.join("Covers/cover.svg.j2"), "updated template").unwrap();
+        commit(1_700_000_200);
+        assert!(
+            scan(&data_dir)[0]
+                .versions
+                .iter()
+                .all(|version| version.last_updated == DateTime::from_timestamp(1_700_000_200, 0))
+        );
+        fs::write(root.join("object.svg"), "updated artwork").unwrap();
+        commit(1_700_000_300);
+        assert!(
+            scan(&data_dir)[0]
+                .versions
+                .iter()
+                .all(|version| version.last_updated == DateTime::from_timestamp(1_700_000_300, 0))
+        );
+        drop(repo);
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
     fn discovers_versions_and_isolates_artifacts() {
         let data_dir =
             std::env::temp_dir().join(format!("book-versions-{}", rand::random::<u64>()));
-        let root = data_dir.join("Folder Name");
+        let root = data_dir.join("Books/Folder Name");
+        fs::create_dir_all(data_dir.join("Archived/Old Book")).unwrap();
+        fs::write(
+            data_dir.join("Archived/Old Book/pandoc.yaml"),
+            "metadata: {}",
+        )
+        .unwrap();
+        fs::write(data_dir.join("pandoc.yaml"), "metadata: {}").unwrap();
         for name in ["Chapters", "Draft v1", "Draft v2", "Empty"] {
             fs::create_dir_all(root.join(name)).unwrap();
         }
@@ -338,6 +430,7 @@ mod tests {
 
         let books = scan(&data_dir);
         assert_eq!(books.len(), 1);
+        assert_eq!(books[0].root, root);
         let versions = &books[0].versions;
         assert_eq!(
             versions

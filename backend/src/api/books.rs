@@ -36,8 +36,9 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/pull", post(pull))
         .route("/build/{title}", post(build_book))
+        .route("/build/{title}/cover/svg", post(build_svg_cover))
+        .route("/build/{title}/cover/jpg", post(build_jpg_cover))
         .route("/deploy/kindle/{title}", post(deploy_kindle))
-        .route("/deploy/openwebui/{title}", post(deploy_openwebui))
         .route("/download/{title}/epub", get(download_epub))
         .route("/download/{title}/md", get(download_md))
         .route("/status", get(status))
@@ -127,6 +128,80 @@ async fn pull(State(state): State<AppState>) -> Result<StatusCode, StatusCode> {
 }
 
 // ── build ────────────────────────────────────────────────────────────────────
+
+async fn build_svg_cover(
+    State(state): State<AppState>,
+    Path(title): Path<String>,
+    Query(query): Query<VersionQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let path = build_cover(&state, &title, &query, false).await?;
+    serve_file(path, "image/svg+xml").await
+}
+
+async fn build_jpg_cover(
+    State(state): State<AppState>,
+    Path(title): Path<String>,
+    Query(query): Query<VersionQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let path = build_cover(&state, &title, &query, true).await?;
+    serve_file(path, "image/jpeg").await
+}
+
+async fn build_cover(
+    state: &AppState,
+    title: &str,
+    query: &VersionQuery,
+    jpeg: bool,
+) -> Result<std::path::PathBuf, (StatusCode, String)> {
+    let (book_root, output_title) = {
+        let catalogue = state
+            .catalogue
+            .read()
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned".into()))?;
+        let book = catalogue
+            .books
+            .iter()
+            .find(|book| book.folder_name == title)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("book '{title}' not found")))?;
+        let version = selected_version(book, query)?;
+        (
+            book.root.clone(),
+            books::version_title(&book.title, &version.name),
+        )
+    };
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let generate =
+            || -> Result<std::path::PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+                let data_dir = std::fs::canonicalize(data_dir)?;
+                let book_root = std::fs::canonicalize(book_root)?;
+                let dist_dir = data_dir.join("dist");
+                std::fs::create_dir_all(&dist_dir)?;
+                let date = chrono::Utc::now().format("%Y-%m-%d");
+                let extension = if jpeg { "jpg" } else { "svg" };
+                let output = dist_dir.join(format!("{output_title} {date}.{extension}"));
+                if jpeg {
+                    crate::cover::generate(&data_dir, &book_root, &output)?;
+                } else {
+                    crate::cover::generate_svg(&data_dir, &book_root, &output)?;
+                }
+                Ok(output)
+            };
+        generate().map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to generate cover: {error}"),
+            )
+        })
+    })
+    .await
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("cover task failed: {error}"),
+        )
+    })?
+}
 
 async fn build_book(
     State(state): State<AppState>,
@@ -247,35 +322,6 @@ async fn deploy_kindle(
     }
 
     Ok(StatusCode::NO_CONTENT)
-}
-
-// ── deploy open webui ────────────────────────────────────────────────────────
-
-#[derive(Serialize)]
-struct OpenWebUIResponse {
-    url: String,
-}
-
-async fn deploy_openwebui(
-    State(state): State<AppState>,
-    Path(title): Path<String>,
-    Query(query): Query<VersionQuery>,
-) -> Result<Json<OpenWebUIResponse>, (StatusCode, String)> {
-    let (md_path, output_title) = selected_artifact(&state, &title, &query, false)?;
-
-    let url = deploy::deploy_to_openwebui(
-        &state.open_webui_endpoint,
-        &state.open_webui_api_key,
-        &md_path,
-        &output_title,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!("Open WebUI deploy failed for '{title}': {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, e)
-    })?;
-
-    Ok(Json(OpenWebUIResponse { url }))
 }
 
 fn selected_artifact(
@@ -480,6 +526,98 @@ async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse>, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cover_endpoints_download_selected_version_without_building_manuscript() {
+        use axum::http::Request;
+        use std::sync::RwLock;
+        use tower::ServiceExt;
+
+        let data_dir = std::env::temp_dir().join(format!("cover-api-{}", rand::random::<u64>()));
+        let root = data_dir.join("Books/Folder Name");
+        std::fs::create_dir_all(root.join("Draft v1")).unwrap();
+        std::fs::create_dir_all(data_dir.join("Covers")).unwrap();
+        std::fs::write(root.join("Draft v1/01.md"), "manuscript").unwrap();
+        std::fs::write(
+            root.join("pandoc.yaml"),
+            "metadata:\n  title: Display Title\n",
+        )
+        .unwrap();
+        std::fs::write(data_dir.join("Covers/cover.svg.j2"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="48"><rect width="32" height="48" fill="red"/></svg>"#).unwrap();
+        let state = AppState {
+            config: Arc::new(RwLock::new(crate::config::Config::default())),
+            config_path: data_dir.join("config.json"),
+            data_dir: data_dir.clone(),
+            catalogue: Arc::new(RwLock::new(books::Catalogue {
+                last_pull: None,
+                books: books::scan(&data_dir),
+            })),
+            oauth: crate::oauth::OAuthManager::load(data_dir.join("tokens.json"), [0; 32]),
+            forgejo_creds: Default::default(),
+            google_creds: Default::default(),
+        };
+        let app = router().with_state(state.clone());
+        for (format, content_type) in [("svg", "image/svg+xml"), ("jpg", "image/jpeg")] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!(
+                            "/build/Folder%20Name/cover/{format}?version=Draft%20v1"
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
+            let date = chrono::Utc::now().format("%Y-%m-%d");
+            assert_eq!(
+                response.headers()[header::CONTENT_DISPOSITION],
+                format!("attachment; filename=\"Display Title (Draft v1) {date}.{format}\"")
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            if format == "svg" {
+                assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
+                assert!(
+                    !data_dir
+                        .join(format!("dist/Display Title (Draft v1) {date}.jpg"))
+                        .exists()
+                );
+            } else {
+                let image = image::load_from_memory(&bytes).unwrap();
+                assert_eq!((image.width(), image.height()), (32, 48));
+            }
+        }
+        for uri in [
+            "/build/Folder%20Name/cover/svg?version=Unknown",
+            "/build/Missing/cover/jpg?version=Draft%20v1",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+        let catalogue = state.catalogue.read().unwrap();
+        let version = &catalogue.books[0].versions[0];
+        assert!(version.last_built.is_none());
+        assert!(version.epub_path.is_none());
+        assert!(version.md_path.is_none());
+        drop(catalogue);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
 
     #[test]
     fn selection_defaults_to_chapters_and_never_falls_back_for_unknown_versions() {

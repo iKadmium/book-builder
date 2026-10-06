@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import type { Book, Version } from "../lib/types";
 
+test.use({ baseURL: "http://localhost:4173" });
+
 test("selected version controls manuscript state and every book action", async ({ page }) => {
     const chapters: Version = {
         chapters: [{ path: "01. Current.md", wordCount: 100 }],
@@ -30,11 +32,19 @@ test("selected version controls manuscript state and every book action", async (
             return;
         }
         requests.push(`${url.pathname}:${url.searchParams.get("version")}`);
-        if (url.pathname.startsWith("/api/build/")) {
+        if (url.pathname.includes("/cover/")) {
+            expect(route.request().method()).toBe("POST");
+            const format = url.pathname.endsWith("/svg") ? "svg" : "jpg";
+            await route.fulfill({
+                headers: {
+                    "content-type": format === "svg" ? "image/svg+xml" : "image/jpeg",
+                    "content-disposition": `attachment; filename="Display Title (Draft v1) 2026-10-03.${format}"`,
+                },
+                body: "cover image",
+            });
+        } else if (url.pathname.startsWith("/api/build/")) {
             draft.lastBuilt = "2026-10-03T00:00:00Z";
             await route.fulfill({ status: 204 });
-        } else if (url.pathname.includes("/openwebui/")) {
-            await route.fulfill({ json: { url: "about:blank" } });
         } else if (url.pathname.startsWith("/api/download/")) {
             await route.fulfill({
                 headers: {
@@ -53,7 +63,20 @@ test("selected version controls manuscript state and every book action", async (
     await expect(page.getByText("100 words", { exact: true })).toBeVisible();
     await selector.selectOption("Draft v1");
     await expect(page.getByText("200 words", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Deploy", exact: false })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Deploy", exact: false })).toBeEnabled();
+    for (const format of ["svg", "jpg"] as const) {
+        await page.getByRole("button", { name: "Deploy", exact: false }).click();
+        await expect(page.getByRole("button", { name: "Kindle" })).toBeDisabled();
+        await expect(page.getByRole("button", { name: "Download EPUB" })).toBeDisabled();
+        await expect(page.getByRole("button", { name: "Download MD" })).toBeDisabled();
+        const coverDownloadPromise = page.waitForEvent("download");
+        await page.getByRole("button", { name: `Build ${format.toUpperCase()} Cover` }).click();
+        const coverDownload = await coverDownloadPromise;
+        expect(coverDownload.suggestedFilename()).toBe(`Display Title (Draft v1) 2026-10-03.${format}`);
+        expect(requests).toContain(`/api/build/Folder%20Name/cover/${format}:Draft v1`);
+        await expect(selector).toBeEnabled();
+        expect(draft.lastBuilt).toBeNull();
+    }
     await page.getByText("1 chapter", { exact: true }).click();
     await expect(page.getByText("01. Draft.md", { exact: true })).toBeVisible();
     await expect(page.getByText("01. Current.md", { exact: true })).toHaveCount(0);
@@ -64,10 +87,6 @@ test("selected version controls manuscript state and every book action", async (
     await page.getByRole("button", { name: "Deploy", exact: false }).click();
     await page.getByRole("button", { name: "Kindle" }).click();
     await expect.poll(() => requests).toContain("/api/deploy/kindle/Folder%20Name:Draft v1");
-    await expect(selector).toBeEnabled();
-    await page.getByRole("button", { name: "Deploy", exact: false }).click();
-    await page.getByRole("button", { name: "Open WebUI" }).click();
-    await expect.poll(() => requests).toContain("/api/deploy/openwebui/Folder%20Name:Draft v1");
     await expect(selector).toBeEnabled();
     await page.getByRole("button", { name: "Deploy", exact: false }).click();
     const downloadPromise = page.waitForEvent("download");

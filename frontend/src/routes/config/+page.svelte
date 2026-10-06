@@ -2,11 +2,13 @@
   import { AppBar } from "@skeletonlabs/skeleton-svelte";
   import type { AppConfig } from "$lib/types";
   import type { PageData } from "./$types";
+  import { untrack } from "svelte";
+  import { ensureOk, errorMessage } from "$lib/errors";
 
   let { data }: { data: PageData } = $props();
 
   // Deep clone so edits don't mutate the load data directly
-  let cfg: AppConfig = $state(JSON.parse(JSON.stringify(data)));
+  let cfg: AppConfig = $state(untrack(() => structuredClone(data.config)));
   let saving = $state(false);
   let saved = $state(false);
   let error = $state("");
@@ -21,14 +23,11 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(cfg),
       });
-      if (res.ok) {
-        saved = true;
-        setTimeout(() => (saved = false), 3000);
-      } else {
-        error = await res.text();
-      }
-    } catch (e) {
-      error = String(e);
+      await ensureOk(res);
+      saved = true;
+      setTimeout(() => (saved = false), 3000);
+    } catch (cause) {
+      error = `Save failed: ${errorMessage(cause)}`;
     } finally {
       saving = false;
     }
@@ -49,6 +48,22 @@
 
   <main class="container mx-auto p-8 max-w-2xl space-y-8">
     <h1 class="h2">Configuration</h1>
+    {#if data.loadError}
+      <div
+        role="alert"
+        class="border-l-4 border-error-500 p-3 text-error-500 whitespace-pre-wrap break-words"
+      >
+        {data.loadError}
+      </div>
+    {/if}
+    {#if data.oauthError}
+      <div
+        role="alert"
+        class="border-l-4 border-error-500 p-3 text-error-500 whitespace-pre-wrap break-words"
+      >
+        OAuth failed: {data.oauthError}
+      </div>
+    {/if}
 
     <!-- Forgejo -->
     <section class="card preset-filled-surface-100-900 p-6 space-y-4">
@@ -124,15 +139,24 @@
 
     <!-- Save -->
     <div class="flex items-center gap-4">
-      <button class="btn preset-filled" onclick={save} disabled={saving}>
+      <button
+        class="btn preset-filled"
+        onclick={save}
+        disabled={saving || !!data.loadError}
+      >
         {saving ? "Saving…" : "Save"}
       </button>
       {#if saved}
         <span class="text-success-500 text-sm">Saved.</span>
       {/if}
-      {#if error}
-        <span class="text-error-500 text-sm">{error}</span>
-      {/if}
     </div>
+    {#if error}
+      <div
+        role="alert"
+        class="border-l-4 border-error-500 p-3 text-error-500 whitespace-pre-wrap break-words"
+      >
+        {error}
+      </div>
+    {/if}
   </main>
 </div>

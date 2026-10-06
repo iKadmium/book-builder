@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use tokio::{fs, process::Command};
 
-/// Assembles the book markdown and runs pandoc to produce an EPUB.
+/// Generates a cover, assembles the book markdown and runs pandoc to produce an EPUB.
+/// JPEG and debug SVG covers are saved alongside the EPUB in `data_dir/dist`.
 /// Returns the path to the generated file.
 pub async fn build(
     data_dir: &Path,
@@ -32,6 +33,17 @@ pub async fn build(
 
     let md = assemble_markdown(&book_root, version).await?;
 
+    let cover_path = dist_dir.join(format!("{title} {date}.jpg"));
+    let cover_data_dir = data_dir.clone();
+    let cover_book_root = book_root.clone();
+    let cover_output = cover_path.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::cover::generate(&cover_data_dir, &cover_book_root, &cover_output)
+            .map_err(|error| format!("failed to generate cover: {error}"))
+    })
+    .await
+    .map_err(|error| format!("cover task failed: {error}"))??;
+
     // ── Write temp file ───────────────────────────────────────────────────
 
     // Use a per-book temp filename so concurrent builds don't collide.
@@ -57,6 +69,8 @@ pub async fn build(
         .arg("-o")
         .arg(&output_path)
         .arg(format!("--css={}", css_path.display()))
+        .arg("--epub-cover-image")
+        .arg(&cover_path)
         .arg("--top-level-division=chapter")
         .output()
         .await
@@ -164,9 +178,16 @@ mod tests {
     #[ignore = "requires pandoc and unzip"]
     async fn epub_title_and_filename_include_selected_version() {
         let data_dir = std::env::temp_dir().join(format!("book-epub-{}", rand::random::<u64>()));
-        let root = data_dir.join("Folder Name");
+        let root = data_dir.join("Books/Folder Name");
         fs::create_dir_all(root.join("Draft v1")).await.unwrap();
         fs::create_dir_all(root.join("Chapters")).await.unwrap();
+        fs::create_dir_all(data_dir.join("Covers")).await.unwrap();
+        fs::write(
+            data_dir.join("Covers/cover.svg.j2"),
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="48"><rect width="32" height="48" fill="red"/></svg>"#,
+        )
+        .await
+        .unwrap();
         fs::write(
             root.join("pandoc.yaml"),
             "metadata:\n  title: Display Title\n  author: Test Author\n",
@@ -200,11 +221,11 @@ mod tests {
             .await
             .unwrap();
         assert!(metadata.status.success());
-        assert!(
-            String::from_utf8(metadata.stdout)
-                .unwrap()
-                .contains(">Display Title (Draft v1)</dc:title>")
-        );
+        let metadata = String::from_utf8(metadata.stdout).unwrap();
+        assert!(metadata.contains("cover-image"));
+        assert!(metadata.contains(">Display Title (Draft v1)</dc:title>"));
+        assert!(path.with_extension("jpg").exists());
+        assert!(path.with_extension("svg").exists());
         let content = Command::new("unzip")
             .arg("-p")
             .arg(&path)
