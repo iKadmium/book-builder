@@ -335,7 +335,7 @@ mod tests {
         fs::write(root.join("pandoc.yaml"), "metadata:\n  title: Test Book\n").unwrap();
         fs::write(root.join("Draft/01.md"), "draft").unwrap();
         fs::write(root.join("Final/01.md"), "final").unwrap();
-        fs::write(data_dir.join("Covers/cover.svg.j2"), "initial template").unwrap();
+        fs::write(data_dir.join("Covers/cover.typ"), "initial template").unwrap();
         let repo = Repository::init(&data_dir).unwrap();
         let commit = |seconds| {
             let mut index = repo.index().unwrap();
@@ -375,7 +375,7 @@ mod tests {
             books[0].versions[1].last_updated,
             DateTime::from_timestamp(1_700_000_000, 0)
         );
-        fs::write(data_dir.join("Covers/cover.svg.j2"), "updated template").unwrap();
+        fs::write(data_dir.join("Covers/cover.typ"), "updated template").unwrap();
         commit(1_700_000_200);
         assert!(
             scan(&data_dir)[0]

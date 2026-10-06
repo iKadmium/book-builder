@@ -20,6 +20,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+RUN cargo install typst-cli --locked
+
 WORKDIR /build
 
 # Cache dependencies before copying source.
@@ -47,6 +49,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=backend /build/target/release/backend /usr/local/bin/backend
+COPY --from=backend /usr/local/cargo/bin/typst /usr/local/bin/typst
 COPY --from=frontend /build/build                 /app/static
 
 ENV STATIC_DIR=/app/static

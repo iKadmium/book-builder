@@ -20,6 +20,7 @@ Backend:
 ## Backend
 
 Do not edit cargo.toml - add or remove packages via `cargo add` and `cargo remove`
+Use clippy to lint
 
 ## Frontend
 

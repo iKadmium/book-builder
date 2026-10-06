@@ -71,7 +71,7 @@
     }
   }
 
-  async function buildCover(version: string, format: "svg" | "jpg") {
+  async function buildCover(version: string, format: "svg" | "png" | "jpg") {
     building = true;
     error = "";
     try {

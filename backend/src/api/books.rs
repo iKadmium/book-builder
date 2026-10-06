@@ -17,6 +17,13 @@ struct VersionQuery {
     version: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+enum CoverFormat {
+    Svg,
+    Png,
+    Jpg,
+}
+
 fn selected_version<'book>(
     book: &'book books::Book,
     query: &VersionQuery,
@@ -37,6 +44,7 @@ pub fn router() -> Router<AppState> {
         .route("/pull", post(pull))
         .route("/build/{title}", post(build_book))
         .route("/build/{title}/cover/svg", post(build_svg_cover))
+        .route("/build/{title}/cover/png", post(build_png_cover))
         .route("/build/{title}/cover/jpg", post(build_jpg_cover))
         .route("/deploy/kindle/{title}", post(deploy_kindle))
         .route("/download/{title}/epub", get(download_epub))
@@ -129,12 +137,21 @@ async fn pull(State(state): State<AppState>) -> Result<StatusCode, StatusCode> {
 
 // ── build ────────────────────────────────────────────────────────────────────
 
+async fn build_png_cover(
+    State(state): State<AppState>,
+    Path(title): Path<String>,
+    Query(query): Query<VersionQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let path = build_cover(&state, &title, &query, CoverFormat::Png).await?;
+    serve_file(path, "image/png").await
+}
+
 async fn build_svg_cover(
     State(state): State<AppState>,
     Path(title): Path<String>,
     Query(query): Query<VersionQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let path = build_cover(&state, &title, &query, false).await?;
+    let path = build_cover(&state, &title, &query, CoverFormat::Svg).await?;
     serve_file(path, "image/svg+xml").await
 }
 
@@ -143,7 +160,7 @@ async fn build_jpg_cover(
     Path(title): Path<String>,
     Query(query): Query<VersionQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let path = build_cover(&state, &title, &query, true).await?;
+    let path = build_cover(&state, &title, &query, CoverFormat::Jpg).await?;
     serve_file(path, "image/jpeg").await
 }
 
@@ -151,7 +168,7 @@ async fn build_cover(
     state: &AppState,
     title: &str,
     query: &VersionQuery,
-    jpeg: bool,
+    format: CoverFormat,
 ) -> Result<std::path::PathBuf, (StatusCode, String)> {
     let (book_root, output_title) = {
         let catalogue = state
@@ -178,12 +195,16 @@ async fn build_cover(
                 let dist_dir = data_dir.join("dist");
                 std::fs::create_dir_all(&dist_dir)?;
                 let date = chrono::Utc::now().format("%Y-%m-%d");
-                let extension = if jpeg { "jpg" } else { "svg" };
+                let extension = match format {
+                    CoverFormat::Svg => "svg",
+                    CoverFormat::Png => "png",
+                    CoverFormat::Jpg => "jpg",
+                };
                 let output = dist_dir.join(format!("{output_title} {date}.{extension}"));
-                if jpeg {
-                    crate::cover::generate(&data_dir, &book_root, &output)?;
-                } else {
-                    crate::cover::generate_svg(&data_dir, &book_root, &output)?;
+                match format {
+                    CoverFormat::Svg => crate::cover::generate_svg(&data_dir, &book_root, &output)?,
+                    CoverFormat::Png => crate::cover::generate_png(&data_dir, &book_root, &output)?,
+                    CoverFormat::Jpg => crate::cover::generate(&data_dir, &book_root, &output)?,
                 }
                 Ok(output)
             };
@@ -543,7 +564,11 @@ mod tests {
             "metadata:\n  title: Display Title\n",
         )
         .unwrap();
-        std::fs::write(data_dir.join("Covers/cover.svg.j2"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="48"><rect width="32" height="48" fill="red"/></svg>"#).unwrap();
+        std::fs::write(
+            data_dir.join("Covers/cover.typ"),
+            "#set page(width: 32pt, height: 48pt, fill: red)\n#rect(width: 32pt, height: 48pt, fill: red)\n",
+        )
+        .unwrap();
         let state = AppState {
             config: Arc::new(RwLock::new(crate::config::Config::default())),
             config_path: data_dir.join("config.json"),
@@ -557,7 +582,11 @@ mod tests {
             google_creds: Default::default(),
         };
         let app = router().with_state(state.clone());
-        for (format, content_type) in [("svg", "image/svg+xml"), ("jpg", "image/jpeg")] {
+        for (format, content_type) in [
+            ("svg", "image/svg+xml"),
+            ("png", "image/png"),
+            ("jpg", "image/jpeg"),
+        ] {
             let response = app
                 .clone()
                 .oneshot(
@@ -583,6 +612,8 @@ mod tests {
                 .unwrap();
             if format == "svg" {
                 assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
+            } else if format == "png" {
+                assert!(image::load_from_memory(&bytes).is_ok());
                 assert!(
                     !data_dir
                         .join(format!("dist/Display Title (Draft v1) {date}.jpg"))

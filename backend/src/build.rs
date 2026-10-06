@@ -4,7 +4,7 @@ use chrono::Utc;
 use tokio::{fs, process::Command};
 
 /// Generates a cover, assembles the book markdown and runs pandoc to produce an EPUB.
-/// JPEG and debug SVG covers are saved alongside the EPUB in `data_dir/dist`.
+/// JPEG and debug PNG covers are saved alongside the EPUB in `data_dir/dist`.
 /// Returns the path to the generated file.
 pub async fn build(
     data_dir: &Path,
@@ -183,8 +183,8 @@ mod tests {
         fs::create_dir_all(root.join("Chapters")).await.unwrap();
         fs::create_dir_all(data_dir.join("Covers")).await.unwrap();
         fs::write(
-            data_dir.join("Covers/cover.svg.j2"),
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="48"><rect width="32" height="48" fill="red"/></svg>"#,
+            data_dir.join("Covers/cover.typ"),
+            "#set page(width: 32pt, height: 48pt, fill: red)\n#rect(width: 32pt, height: 48pt, fill: red)\n",
         )
         .await
         .unwrap();
@@ -225,7 +225,7 @@ mod tests {
         assert!(metadata.contains("cover-image"));
         assert!(metadata.contains(">Display Title (Draft v1)</dc:title>"));
         assert!(path.with_extension("jpg").exists());
-        assert!(path.with_extension("svg").exists());
+        assert!(path.with_extension("png").exists());
         let content = Command::new("unzip")
             .arg("-p")
             .arg(&path)

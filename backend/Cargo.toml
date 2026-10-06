@@ -11,14 +11,10 @@ chrono = { version = "0.4.45", features = ["serde"] }
 dotenvy = "0.15.7"
 getrandom = "0.4.3"
 git2 = { version = "0.21.0", features = ["vendored-libgit2"] }
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
-minijinja = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 percent-encoding = "2.3.2"
 rand = "0.10.2"
 reqwest = { version = "0.13.4", features = ["form", "json", "multipart"] }
-resvg = "0.48.1"
-roxmltree = "0.21"
-rustybuzz = "0.20.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 serde_yaml = "0.9.34"

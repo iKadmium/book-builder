@@ -1,4 +1,6 @@
-FROM mcr.microsoft.com/devcontainers/rust:2-1-trixie
+FROM mcr.microsoft.com/devcontainers/rust:trixie
+
+RUN cargo install typst-cli --locked
 
 # Install Node.js via NodeSource
 ARG NODE_VERSION=24

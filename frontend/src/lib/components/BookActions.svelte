@@ -18,7 +18,7 @@
     onbuild: () => void;
     ondeploy: () => void;
     ondownload: (format: "epub" | "md") => void;
-    oncover: (format: "svg" | "jpg") => void;
+    oncover: (format: "svg" | "png" | "jpg") => void;
   } = $props();
 
   function runAction(action: () => void) {
@@ -78,6 +78,12 @@
           onclick={() => runAction(() => oncover("svg"))}
         >
           Build SVG Cover
+        </button>
+        <button
+          class="btn preset-ghost w-full justify-start text-sm"
+          onclick={() => runAction(() => oncover("png"))}
+        >
+          Build PNG Cover
         </button>
         <button
           class="btn preset-ghost w-full justify-start text-sm"

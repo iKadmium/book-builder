@@ -34,10 +34,18 @@ test("selected version controls manuscript state and every book action", async (
         requests.push(`${url.pathname}:${url.searchParams.get("version")}`);
         if (url.pathname.includes("/cover/")) {
             expect(route.request().method()).toBe("POST");
-            const format = url.pathname.endsWith("/svg") ? "svg" : "jpg";
+            const format = url.pathname.endsWith("/svg")
+                ? "svg"
+                : url.pathname.endsWith("/png")
+                    ? "png"
+                    : "jpg";
             await route.fulfill({
                 headers: {
-                    "content-type": format === "svg" ? "image/svg+xml" : "image/jpeg",
+                    "content-type": format === "svg"
+                        ? "image/svg+xml"
+                        : format === "png"
+                            ? "image/png"
+                            : "image/jpeg",
                     "content-disposition": `attachment; filename="Display Title (Draft v1) 2026-10-03.${format}"`,
                 },
                 body: "cover image",
@@ -64,7 +72,7 @@ test("selected version controls manuscript state and every book action", async (
     await selector.selectOption("Draft v1");
     await expect(page.getByText("200 words", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Deploy", exact: false })).toBeEnabled();
-    for (const format of ["svg", "jpg"] as const) {
+    for (const format of ["svg", "png", "jpg"] as const) {
         await page.getByRole("button", { name: "Deploy", exact: false }).click();
         await expect(page.getByRole("button", { name: "Kindle" })).toBeDisabled();
         await expect(page.getByRole("button", { name: "Download EPUB" })).toBeDisabled();
