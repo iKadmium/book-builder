@@ -14,12 +14,16 @@
   let error = $state("");
   let deployMenuOpen = $state(false);
 
+  // Newest first: Final, then the highest-numbered draft, and so on.
+  const versionNames = $derived(
+    Object.keys(book.versions).sort((a, b) =>
+      b.localeCompare(a, undefined, { numeric: true }),
+    ),
+  );
   const name = $derived.by(() => {
     if (selectedVersion && book.versions[selectedVersion])
       return selectedVersion;
-    return book.versions.Chapters
-      ? "Chapters"
-      : (Object.keys(book.versions).sort()[0] ?? "");
+    return versionNames[0] ?? "";
   });
   const version = $derived(book.versions[name]);
   const builtOk = $derived(
@@ -173,7 +177,7 @@
   <label class="flex items-center gap-3 text-sm">
     <span>Version</span>
     <select
-      class="select min-w-0 flex-1 pl-2"
+      class="select min-w-0 flex-1 px-2"
       aria-label={`Version for ${book.title}`}
       value={name}
       disabled={!version || building || deploying}
@@ -185,7 +189,7 @@
       {#if !version}
         <option value="">No versions</option>
       {/if}
-      {#each Object.keys(book.versions).sort() as versionName}
+      {#each versionNames as versionName}
         <option value={versionName}>{versionName}</option>
       {/each}
     </select>

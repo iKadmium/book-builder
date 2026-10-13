@@ -30,11 +30,8 @@ fn selected_version<'book>(
 ) -> Result<&'book books::Version, (StatusCode, String)> {
     let version = match query.version.as_deref() {
         Some(name) => book.versions.iter().find(|version| version.name == name),
-        None => book
-            .versions
-            .iter()
-            .find(|version| version.name == "Chapters")
-            .or_else(|| book.versions.first()),
+        // Versions are sorted newest first, so the default is Final or the latest draft.
+        None => book.versions.first(),
     };
     version.ok_or_else(|| (StatusCode::NOT_FOUND, "version not found".into()))
 }
@@ -651,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_defaults_to_chapters_and_never_falls_back_for_unknown_versions() {
+    fn selection_defaults_to_first_version_and_never_falls_back_for_unknown_versions() {
         let version = |name: &str, epub_path| books::Version {
             name: name.into(),
             chapters: Vec::new(),
@@ -668,8 +665,8 @@ mod tests {
             blurb: None,
             root: "book".into(),
             versions: vec![
+                version("Final", None),
                 version("Draft v1", Some("draft.epub".into())),
-                version("Chapters", None),
             ],
             last_updated: None,
         };
@@ -677,7 +674,7 @@ mod tests {
             selected_version(&book, &VersionQuery::default())
                 .unwrap()
                 .name,
-            "Chapters"
+            "Final"
         );
         let query = VersionQuery {
             version: Some("Draft v1".into()),
@@ -694,7 +691,7 @@ mod tests {
         assert!(status.get("lastBuilt").is_some());
         assert!(status.get("lastDeployed").is_some());
         let query = VersionQuery {
-            version: Some("Chapters".into()),
+            version: Some("Final".into()),
         };
         assert!(selected_version(&book, &query).unwrap().epub_path.is_none());
         let query = VersionQuery {
@@ -704,7 +701,7 @@ mod tests {
             selected_version(&book, &query).unwrap_err().0,
             StatusCode::NOT_FOUND
         );
-        book.versions.pop();
+        book.versions.remove(0);
         assert_eq!(
             selected_version(&book, &VersionQuery::default())
                 .unwrap()

@@ -69,8 +69,8 @@ pub struct Catalogue {
 pub type SharedCatalogue = Arc<RwLock<Catalogue>>;
 
 /// Scan `data_dir/Books` for books. A book is any immediate subdirectory that
-/// contains a `pandoc.yaml` file. Versions are immediate subdirectories
-/// containing Markdown files.
+/// contains a `pandoc.yaml` file. Versions are immediate subdirectories whose
+/// names start with "Draft" or "Final" and that contain Markdown files.
 pub fn scan(data_dir: &Path) -> Vec<Book> {
     let mut books = Vec::new();
     let repo = Repository::open(data_dir);
@@ -132,13 +132,16 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
                 if !version_path.is_dir() {
                     continue;
                 }
+                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if !is_version_name(&name) {
+                    continue;
+                }
                 let chapters = scan_chapters(&version_path);
                 if chapters.is_empty() {
                     continue;
                 }
-                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                    continue;
-                };
                 let output_title = version_title(&title, &name);
                 let (epub_path, last_built) = latest_epub(data_dir, &output_title);
                 let md_path = latest_md(data_dir, &output_title);
@@ -158,7 +161,7 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
                 });
             }
         }
-        versions.sort_by(|left, right| left.name.cmp(&right.name));
+        versions.sort_by(|left, right| compare_version_names(&left.name, &right.name));
         books.push(Book {
             folder_name,
             title,
@@ -172,6 +175,49 @@ pub fn scan(data_dir: &Path) -> Vec<Book> {
 
     books.sort_by(|a, b| a.folder_name.cmp(&b.folder_name));
     books
+}
+
+fn is_version_name(name: &str) -> bool {
+    name.starts_with("Draft") || name.starts_with("Final")
+}
+
+/// Orders version names newest first: reverse alphabetical, with digit runs
+/// compared numerically so "Final" precedes "Draft 10", which precedes "Draft 9".
+pub fn compare_version_names(left: &str, right: &str) -> std::cmp::Ordering {
+    natural_cmp(right, left)
+}
+
+fn natural_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    let mut left = left.chars().peekable();
+    let mut right = right.chars().peekable();
+    loop {
+        match (left.peek().copied(), right.peek().copied()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(l), Some(r)) if l.is_ascii_digit() && r.is_ascii_digit() => {
+                let take_number = |chars: &mut std::iter::Peekable<std::str::Chars>| {
+                    let mut digits = String::new();
+                    while let Some(c) = chars.next_if(char::is_ascii_digit) {
+                        digits.push(c);
+                    }
+                    digits.trim_start_matches('0').to_string()
+                };
+                let (l, r) = (take_number(&mut left), take_number(&mut right));
+                let ordering = l.len().cmp(&r.len()).then_with(|| l.cmp(&r));
+                if ordering.is_ne() {
+                    return ordering;
+                }
+            }
+            (Some(l), Some(r)) => {
+                if l != r {
+                    return l.cmp(&r);
+                }
+                left.next();
+                right.next();
+            }
+        }
+    }
 }
 
 /// Parse `pandoc.yaml` and return the metadata fields.
@@ -368,11 +414,11 @@ mod tests {
             DateTime::from_timestamp(1_700_000_100, 0)
         );
         assert_eq!(
-            books[0].versions[0].last_updated,
+            books[0].versions[1].last_updated,
             DateTime::from_timestamp(1_700_000_100, 0)
         );
         assert_eq!(
-            books[0].versions[1].last_updated,
+            books[0].versions[0].last_updated,
             DateTime::from_timestamp(1_700_000_000, 0)
         );
         fs::write(data_dir.join("Covers/cover.typ"), "updated template").unwrap();
@@ -407,7 +453,14 @@ mod tests {
         )
         .unwrap();
         fs::write(data_dir.join("pandoc.yaml"), "metadata: {}").unwrap();
-        for name in ["Chapters", "Draft v1", "Draft v2", "Empty"] {
+        for name in [
+            "Chapters",
+            "Draft v1",
+            "Draft v2",
+            "Draft v10",
+            "Final",
+            "Draft Empty",
+        ] {
             fs::create_dir_all(root.join(name)).unwrap();
         }
         fs::write(
@@ -419,6 +472,8 @@ mod tests {
         fs::write(root.join("Draft v1/02.md"), "second").unwrap();
         fs::write(root.join("Draft v1/01.md"), "first draft chapter").unwrap();
         fs::write(root.join("Draft v2/01.md"), "another draft").unwrap();
+        fs::write(root.join("Draft v10/01.md"), "latest draft").unwrap();
+        fs::write(root.join("Final/01.md"), "final").unwrap();
         fs::create_dir_all(data_dir.join("dist")).unwrap();
         let epub = data_dir.join("dist/Display Title (Draft v1) 2026-10-03.epub");
         fs::write(&epub, "epub").unwrap();
@@ -437,12 +492,12 @@ mod tests {
                 .iter()
                 .map(|version| version.name.as_str())
                 .collect::<Vec<_>>(),
-            ["Chapters", "Draft v1", "Draft v2"]
+            ["Final", "Draft v10", "Draft v2", "Draft v1"]
         );
-        assert_eq!(versions[1].chapters.len(), 2);
-        assert_eq!(versions[1].chapters[0].word_count, 3);
-        assert_eq!(versions[1].epub_path.as_ref(), Some(&epub));
-        assert!(versions[1].md_path.is_some());
+        assert_eq!(versions[3].chapters.len(), 2);
+        assert_eq!(versions[3].chapters[0].word_count, 3);
+        assert_eq!(versions[3].epub_path.as_ref(), Some(&epub));
+        assert!(versions[3].md_path.is_some());
         assert!(versions[0].epub_path.is_none());
         assert!(versions[2].epub_path.is_none());
         assert!(!matches_artifact(
