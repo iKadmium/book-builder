@@ -22,7 +22,7 @@ test("selected version controls manuscript state and every book action", async (
         title: "Display Title",
         subtitle: null,
         blurb: null,
-        versions: { Chapters: chapters, "Draft v1": draft },
+        versions: { "Draft v1": draft, Final: chapters },
     };
     const requests: string[] = [];
     await page.route("**/api/**", async (route) => {
@@ -67,7 +67,8 @@ test("selected version controls manuscript state and every book action", async (
     });
     await page.goto("/");
     const selector = page.getByRole("combobox", { name: "Version for Display Title" });
-    await expect(selector).toHaveValue("Chapters");
+    await expect(selector).toHaveValue("Final");
+    await expect(selector.locator("option")).toHaveText(["Final", "Draft v1"]);
     await expect(page.getByText("100 words", { exact: true })).toBeVisible();
     await selector.selectOption("Draft v1");
     await expect(page.getByText("200 words", { exact: true })).toBeVisible();
